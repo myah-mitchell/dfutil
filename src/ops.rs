@@ -418,12 +418,6 @@ pub fn init(
         Ok(relative) => format!("~/{}", relative.display()),
         Err(_) => checkout.display().to_string(),
     };
-    let missing: Vec<String> = config
-        .vars
-        .iter()
-        .filter(|(_, definition)| definition.default_value().is_none())
-        .map(|(name, _)| name.clone())
-        .collect();
     let host = HostConfig {
         repo: repo_text,
         presets,
@@ -434,12 +428,6 @@ pub fn init(
         std::fs::create_dir_all(parent)?;
     }
     crate::config_edit::create_host(host_path, &host)?;
-    if !missing.is_empty() {
-        log(format!(
-            "set these template variables before deploying: {} (`dfapp var set <name> <value>`)",
-            missing.join(", ")
-        ));
-    }
     Ok(checkout)
 }
 

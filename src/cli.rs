@@ -260,7 +260,7 @@ pub enum HookCommand {
 #[derive(Subcommand, Debug)]
 pub enum ScheduleCommand {
     Enable {
-        #[arg(long, value_enum, default_value = "daily")]
+        #[arg(long, visible_alias = "interval", value_enum, default_value = "daily")]
         frequency: crate::schedule::Frequency,
     },
     Disable,
@@ -332,6 +332,30 @@ pub fn run(cli: Cli) -> Result<i32> {
             *scope,
             &log,
         )?;
+        if interactive && !cli.yes && !cli.json {
+            init_prompts(&host_path, &checkout, presets.is_empty())?;
+        }
+        let repo_config =
+            crate::config::RepoConfig::load(&checkout.join(crate::config::REPO_CONFIG_FILE))?;
+        let host_vars = crate::config::HostConfig::load(&host_path)?.vars;
+        let unset: Vec<&String> = repo_config
+            .vars
+            .iter()
+            .filter(|(name, definition)| {
+                definition.default_value().is_none() && !host_vars.contains_key(*name)
+            })
+            .map(|(name, _)| name)
+            .collect();
+        if !unset.is_empty() && !cli.json {
+            println!(
+                "set these template variables before deploying: {} (`dfapp var set <name> <value>`)",
+                unset
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         output.done(
             true,
             &format!(
@@ -710,6 +734,92 @@ impl From<&Session> for ShowConfig {
             scope: session.workspace.paths.scope,
         }
     }
+}
+
+fn prompt(question: &str, hidden: bool) -> Result<String> {
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let toggle = |flag: &str| {
+        std::process::Command::new("stty")
+            .arg(flag)
+            .stdin(std::process::Stdio::inherit())
+            .status()
+            .ok();
+    };
+    if hidden {
+        toggle("-echo");
+    }
+    let mut answer = String::new();
+    let result = std::io::stdin().read_line(&mut answer);
+    if hidden {
+        toggle("echo");
+        println!();
+    }
+    result?;
+    Ok(answer.trim().to_string())
+}
+
+/// On a terminal, `init` asks for presets (when none were given on the
+/// command line) and for variables that have no default.
+fn init_prompts(
+    host_path: &std::path::Path,
+    checkout: &std::path::Path,
+    ask_presets: bool,
+) -> Result<()> {
+    let config = crate::config::RepoConfig::load(&checkout.join(crate::config::REPO_CONFIG_FILE))?;
+    if ask_presets && !config.presets.is_empty() {
+        println!("Presets:");
+        for (name, preset) in &config.presets {
+            println!(
+                "  {name:<16} {}",
+                preset.description.clone().unwrap_or_default()
+            );
+        }
+        let current = crate::config::HostConfig::load(host_path)?.presets;
+        let answer = prompt(
+            &format!(
+                "Presets to select, comma-separated [{}]: ",
+                current.join(",")
+            ),
+            false,
+        )?;
+        if !answer.is_empty() {
+            let chosen: Vec<String> = answer
+                .split(',')
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect();
+            if let Some(unknown) = chosen
+                .iter()
+                .find(|name| !config.presets.contains_key(*name))
+            {
+                bail!("no preset named `{unknown}`; rerun `dfapp preset select` to fix");
+            }
+            for name in &current {
+                crate::config_edit::host_list(host_path, "presets", name, false)?;
+            }
+            for name in &chosen {
+                crate::config_edit::host_list(host_path, "presets", name, true)?;
+            }
+        }
+    }
+    for (name, definition) in &config.vars {
+        if definition.default_value().is_some() {
+            continue;
+        }
+        let description = definition
+            .description()
+            .map(|text| format!(" ({text})"))
+            .unwrap_or_default();
+        let value = prompt(
+            &format!("Value for `{name}`{description}, empty to skip: "),
+            definition.is_secret(),
+        )?;
+        if !value.is_empty() {
+            crate::config_edit::host_var(host_path, name, &value)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_text(session: &Session) -> String {
