@@ -276,7 +276,16 @@ fn decide(
     let version_changed = resolved.version.as_ref().is_some_and(|version| {
         *version != record.current.version && !script_version_matches(record, version)
     });
-    if version_changed {
+    let held = !forced && record.skip_version.is_some() && record.skip_version == resolved.version;
+    if held {
+        (
+            Action::Keep,
+            format!(
+                "rolled back from {}; reinstall to take it again",
+                resolved.version.clone().unwrap_or_default()
+            ),
+        )
+    } else if version_changed {
         (
             Action::Upgrade,
             format!(
@@ -398,14 +407,35 @@ pub fn apply(
                     .expect("planned installs are resolved");
                 let existing = state.lock().unwrap().tools.get(&row.name).cloned();
                 install::install(&context, &row.name, tool, resolved, existing.as_ref()).and_then(
-                    |record| {
-                        let selection_shells = shells_for(workspace);
-                        install::init::remove(paths, &row.name);
-                        install::init::generate(paths, &row.name, tool, &selection_shells)?;
+                    |mut record| {
                         let message = format!("{} ({})", record.current.version, record.method);
-                        let mut guard = state.lock().unwrap();
-                        guard.tools.insert(row.name.clone(), record);
-                        save(&guard)?;
+                        // Record what's on disk first, so a failing post step
+                        // can't leave the state naming a different version.
+                        {
+                            let mut guard = state.lock().unwrap();
+                            guard.tools.insert(row.name.clone(), record.clone());
+                            save(&guard)?;
+                        }
+                        let finish = install::post_install(&context, &row.name, tool, resolved)
+                            .and_then(|()| {
+                                install::init::remove(paths, &row.name);
+                                install::init::generate(
+                                    paths,
+                                    &row.name,
+                                    tool,
+                                    &shells_for(workspace),
+                                )
+                                .map(|_| ())
+                            });
+                        if let Err(error) = finish {
+                            // An empty fingerprint reads as "recipe changed",
+                            // so the next apply finishes the job.
+                            record.fingerprint = String::new();
+                            let mut guard = state.lock().unwrap();
+                            guard.tools.insert(row.name.clone(), record);
+                            save(&guard)?;
+                            return Err(error);
+                        }
                         Ok(message)
                     },
                 )
@@ -531,6 +561,7 @@ mod tests {
             sha256: None,
             verified: false,
             installed_at: 0,
+            skip_version: None,
         }
     }
 
@@ -585,6 +616,39 @@ mod tests {
         };
         let plan = build(&workspace, &selection, &state, &lookups, &reinstall);
         assert_eq!(action(&plan, "ripgrep"), Action::Reinstall);
+    }
+
+    #[test]
+    fn a_rolled_back_version_is_skipped_until_a_newer_one_or_a_reinstall() {
+        let (_home, workspace, selection) = setup(HostConfig {
+            presets: vec!["claude".into()],
+            ..HostConfig::default()
+        });
+        let mut held = record(&workspace, "ripgrep", "14.1.0");
+        held.skip_version = Some("14.1.1".into());
+        let mut state = ToolState::default();
+        state.tools.insert("ripgrep".into(), held);
+        let plan_with = |version: &str, options: &Options| {
+            let lookups: BTreeMap<_, _> =
+                [("ripgrep".to_string(), resolved(version, Method::Prebuilt))].into();
+            build(&workspace, &selection, &state, &lookups, options)
+        };
+        assert_eq!(
+            action(&plan_with("14.1.1", &Options::default()), "ripgrep"),
+            Action::Keep
+        );
+        assert_eq!(
+            action(&plan_with("14.2.0", &Options::default()), "ripgrep"),
+            Action::Upgrade
+        );
+        let reinstall = Options {
+            mode: Mode::Reinstall(Some(["ripgrep".to_string()].into())),
+            only: None,
+        };
+        assert_eq!(
+            action(&plan_with("14.1.1", &reinstall), "ripgrep"),
+            Action::Upgrade
+        );
     }
 
     #[test]

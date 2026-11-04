@@ -238,6 +238,11 @@ path = "~/work-dotfiles"  # optional; defaults to ~/.local/share/dfapp/sources/w
 
 dfapp clones missing sources on `sync` and `update`, using your own git credentials, so a private repo works over SSH or a credential helper. A source's `dfapp.toml` may add tools, presets, packages, variables, and palettes. A tool or preset with the same name replaces the main repo's definition whole, and `dfapp config validate` notes it. A package directory present in both repos merges file by file, with the source winning.
 
+Source names use letters, digits, `.`, `_`, and `-`, and can't start with `.`.
+
+> [!WARNING]
+> A source is trusted as fully as the main repo. Its tools can run shell commands, and its dotfiles land in your home, so `dfapp update` on a schedule runs whatever the source's latest commit says. Only add repos you control.
+
 ## Sync and scheduled updates
 
 `dfapp sync` captures template edits, then for each repo stashes local changes (untracked files included), pulls with `--rebase` (or `--ff-only` under `pull = "ff-only"`), and reapplies the stash. If the pull or the reapply conflicts, the repo is put back exactly as it was and the run reports it, so a scheduled run never leaves conflict markers in live dotfiles.

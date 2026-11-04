@@ -57,6 +57,10 @@ pub struct ToolRecord {
     /// Whether that hash was checked against a published checksum.
     pub verified: bool,
     pub installed_at: u64,
+    /// Set by a rollback to the version rolled back from, so updates skip it
+    /// until a different version is available or a reinstall is asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_version: Option<String>,
 }
 
 /// Tool records for one scope.
@@ -112,54 +116,86 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 /// An exclusive lock held for the duration of a run that changes state.
-/// Released (the file removed) on drop.
+///
+/// It's an advisory `flock` on `dfapp.lock`, so the kernel releases it when
+/// the holding process exits, however it exits. The file holds the holder's
+/// pid for the error message only. Acquiring a lock this process already
+/// holds succeeds, so nested operations (sync, then deploy) don't deadlock.
 pub struct Lock {
     path: PathBuf,
+    /// The locked file; `None` for a nested acquire.
+    file: Option<std::fs::File>,
+}
+
+fn held_locks() -> &'static std::sync::Mutex<BTreeMap<PathBuf, usize>> {
+    static HELD: std::sync::OnceLock<std::sync::Mutex<BTreeMap<PathBuf, usize>>> =
+        std::sync::OnceLock::new();
+    HELD.get_or_init(Default::default)
 }
 
 impl Lock {
-    /// Takes the lock in `state_dir`, failing if another live dfapp process
-    /// holds it. A lock left by a process that no longer exists is reclaimed.
+    /// Takes the lock in `state_dir`, failing if another dfapp process holds it.
     pub fn acquire(state_dir: &Path) -> Result<Lock> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("creating {}", state_dir.display()))?;
         let path = state_dir.join("dfapp.lock");
-        for _ in 0..2 {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut file) => {
-                    use std::io::Write;
-                    write!(file, "{}", std::process::id())?;
-                    return Ok(Lock { path });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let holder = std::fs::read_to_string(&path).unwrap_or_default();
-                    let pid: Option<u32> = holder.trim().parse().ok();
-                    let alive = pid.is_some_and(|pid| Path::new(&format!("/proc/{pid}")).exists());
-                    if alive && pid != Some(std::process::id()) {
-                        bail!(
-                            "another dfapp run (pid {}) is in progress; wait for it or remove {}",
-                            pid.unwrap_or_default(),
-                            path.display()
-                        );
-                    }
-                    std::fs::remove_file(&path).ok();
-                }
-                Err(error) => {
-                    return Err(error).with_context(|| format!("creating {}", path.display()));
-                }
+        let mut held = held_locks()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(count) = held.get_mut(&path) {
+            *count += 1;
+            return Ok(Lock { path, file: None });
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let holder = std::fs::read_to_string(&path).unwrap_or_default();
+                bail!(
+                    "another dfapp run (pid {}) is in progress; wait for it to finish",
+                    holder.trim()
+                );
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).with_context(|| format!("locking {}", path.display()));
             }
         }
-        bail!("couldn't take the lock at {}", path.display())
+        use std::io::{Seek, Write};
+        file.set_len(0)?;
+        file.rewind()?;
+        write!(file, "{}", std::process::id())?;
+        held.insert(path.clone(), 1);
+        Ok(Lock {
+            path,
+            file: Some(file),
+        })
     }
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.path).ok();
+        let mut held = held_locks()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(count) = held.get_mut(&self.path) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.path);
+            }
+        }
+        // Unlock explicitly rather than relying on close: a child forked by
+        // another thread can hold a copy of the descriptor until it execs, and
+        // the lock lasts while any copy is open. The file itself stays;
+        // deleting it would let a waiting process lock a different inode.
+        if let Some(file) = &self.file {
+            file.unlock().ok();
+        }
     }
 }
 
@@ -188,6 +224,7 @@ mod tests {
                 sha256: None,
                 verified: false,
                 installed_at: 1,
+                skip_version: None,
             },
         );
         save(&path, &state).unwrap();
@@ -196,15 +233,27 @@ mod tests {
     }
 
     #[test]
-    fn lock_is_exclusive_and_reclaims_stale_files() {
+    fn lock_is_exclusive_nests_and_ignores_stale_files() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("dfapp.lock"), "999999999").unwrap();
-        let lock = Lock::acquire(dir.path()).unwrap();
-        assert!(dir.path().join("dfapp.lock").exists());
-        drop(lock);
-        assert!(!dir.path().join("dfapp.lock").exists());
-        // pid 1 is always alive, so its lock is respected.
-        std::fs::write(dir.path().join("dfapp.lock"), "1").unwrap();
-        assert!(Lock::acquire(dir.path()).is_err());
+        let path = dir.path().join("dfapp.lock");
+        // A leftover file from a crashed run doesn't block anything.
+        std::fs::write(&path, "999999999").unwrap();
+        let outer = Lock::acquire(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            std::process::id().to_string()
+        );
+        // Another open file description, as another process would have, can't lock it.
+        let other = std::fs::File::open(&path).unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        // This process can take it again, and the lock lasts until both drop.
+        let inner = Lock::acquire(dir.path()).unwrap();
+        drop(inner);
+        assert!(other.try_lock().is_err());
+        drop(outer);
+        other.try_lock().unwrap();
     }
 }

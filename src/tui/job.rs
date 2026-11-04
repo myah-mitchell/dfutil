@@ -8,7 +8,6 @@ use crate::gitops::{self, Incoming, Outgoing};
 use crate::ops::{ApplyReport, Log, Session};
 use crate::plan::{Mode, Options, Plan};
 use crate::schedule;
-use crate::state::Lock;
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -121,19 +120,6 @@ pub enum JobEvent {
     Done(Result<JobOutput, String>),
 }
 
-/// Takes the same locks `Session::apply` does, for the jobs that call
-/// `apply_plan` directly (it doesn't lock on its own).
-fn lock(session: &Session) -> Result<Vec<Lock>> {
-    let paths = &session.workspace.paths;
-    let mut locks = vec![Lock::acquire(&paths.state_dir)?];
-    if let Some(directory) = paths.tool_state.parent()
-        && directory != paths.state_dir
-    {
-        locks.push(Lock::acquire(directory)?);
-    }
-    Ok(locks)
-}
-
 /// Runs one request to completion on the current thread.
 pub fn run(request: JobRequest, context: &JobContext, log: Log) -> Result<JobOutput> {
     let mut session = Session::load(&context.host_path, context.home.as_deref(), context.offline)?;
@@ -169,7 +155,7 @@ pub fn run(request: JobRequest, context: &JobContext, log: Log) -> Result<JobOut
             &session.workspace.paths.home,
         ))),
         JobRequest::Apply(plan) => {
-            let _locks = lock(&session)?;
+            let _locks = session.lock()?;
             Ok(JobOutput::Report(session.apply_plan(&plan, true, log)?))
         }
         JobRequest::Reinstall(names) => {
@@ -178,7 +164,7 @@ pub fn run(request: JobRequest, context: &JobContext, log: Log) -> Result<JobOut
                 mode: Mode::Reinstall(Some(names.clone())),
                 only: Some(names),
             };
-            let _locks = lock(&session)?;
+            let _locks = session.lock()?;
             let plan = session.plan(&options, false)?;
             Ok(JobOutput::Report(session.apply_plan(&plan, false, log)?))
         }

@@ -383,13 +383,11 @@ fn write_preserving_mode(
     private: bool,
 ) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    crate::util::write_atomic(output, contents)?;
     let mode = std::fs::metadata(template)
         .map(|metadata| metadata.permissions().mode() & 0o777)
         .unwrap_or(0o644);
     let mode = if private { mode & 0o700 } else { mode };
-    std::fs::set_permissions(output, std::fs::Permissions::from_mode(mode))?;
-    Ok(())
+    crate::util::write_atomic_with_mode(output, contents, Some(mode))
 }
 
 /// A rendered file edited in place, with the template it came from.

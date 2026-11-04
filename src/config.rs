@@ -481,6 +481,11 @@ impl Workspace {
                     main_file.display()
                 );
             }
+            if !is_valid_name(name) {
+                bail!(
+                    "sources.{name}: source names use letters, digits, `.`, `_`, and `-`, and don't start with `.`"
+                );
+            }
             let path = match &def.path {
                 Some(path) => crate::util::expand_tilde(path, &paths.home),
                 None => paths.sources_dir.join(name),
@@ -924,6 +929,48 @@ tools = ["ccstatusline"]
             host,
             config,
         )
+    }
+
+    #[test]
+    fn source_names_cant_leave_the_sources_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let Err(error) = workspace_with(
+            home.path(),
+            "[sources.\"../../.ssh\"]\nurl = \"https://example.com/x.git\"\n",
+            HostConfig::default(),
+        ) else {
+            panic!("an escaping source name is refused");
+        };
+        assert!(error.to_string().contains("source names"), "{error}");
+    }
+
+    #[test]
+    fn palette_values_and_var_defaults_cant_hold_newlines() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = workspace_with(
+            home.path(),
+            "[vars]\ngreeting = \"hi\\n[core]\"\n",
+            HostConfig::default(),
+        )
+        .unwrap();
+        let error = crate::deploy::template::workspace_vars(&workspace).unwrap_err();
+        assert!(error.to_string().contains("newlines"), "{error}");
+
+        let mut workspace = workspace_with(
+            home.path(),
+            "[settings]\npalette = \"dark\"\n",
+            HostConfig::default(),
+        )
+        .unwrap();
+        crate::deploy::template::workspace_vars(&workspace).unwrap();
+        workspace
+            .palettes
+            .get_mut("dark")
+            .unwrap()
+            .values
+            .insert("base".into(), "#000\n[core]".into());
+        let error = crate::deploy::template::workspace_vars(&workspace).unwrap_err();
+        assert!(error.to_string().contains("newlines"), "{error}");
     }
 
     #[test]

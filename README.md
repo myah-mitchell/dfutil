@@ -65,7 +65,7 @@ Running `dfapp` with no arguments on a terminal opens the UI.
 | `plan`, `apply` | Shows or makes the changes: installs, upgrades, removals, dotfile links. `--reinstall [names]` and `--only <names>` narrow it |
 | `install`, `uninstall <tools>` | One-off changes on this host, saved to `host.toml` |
 | `reinstall [tools]` | Reinstalls the named tools, or every selected tool |
-| `rollback <tool>` | Switches back to the version before the last install |
+| `rollback <tool>` | Switches back to the version before the last install. Updates then skip the version rolled back from until a newer one is out, or until you reinstall the tool |
 | `deploy [--dry-run] [--force]` | Links and renders dotfiles |
 | `capture [--dry-run]` | Copies edits made to rendered files back into their templates |
 | `diff incoming`, `diff outgoing` | Shows upstream changes, or local changes not yet pushed |

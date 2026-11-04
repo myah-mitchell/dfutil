@@ -52,7 +52,9 @@ fn safe_file_name(name: &str) -> Result<&str> {
 
 fn untar(reader: impl std::io::Read, destination: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(reader);
-    archive.set_preserve_permissions(true);
+    // Off, so modes are masked to 0o777: an archive can't plant setuid or
+    // setgid files, which matters for system-scope installs run as root.
+    archive.set_preserve_permissions(false);
     archive.set_overwrite(true);
     // `unpack` refuses entries that would land outside `destination`.
     archive
@@ -176,6 +178,27 @@ pub(crate) mod tests {
         }
         builder.into_inner().unwrap().finish().unwrap();
         path
+    }
+
+    #[test]
+    fn tar_entries_lose_setuid_and_setgid_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let archive = make_tar_gz(
+            dir.path(),
+            "tool.tar.gz",
+            &[("tool", "#!/bin/sh\n", 0o4755), ("helper", "x", 0o2755)],
+        );
+        let out = dir.path().join("out");
+        unpack(&archive, "tool.tar.gz", &out).unwrap();
+        for name in ["tool", "helper"] {
+            let mode = std::fs::metadata(out.join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o7000, 0, "{name} kept mode {mode:o}");
+            assert_eq!(mode & 0o111, 0o111, "{name} lost its exec bits");
+        }
     }
 
     #[test]

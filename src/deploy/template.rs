@@ -156,6 +156,12 @@ pub fn workspace_vars(workspace: &Workspace) -> Result<Vars> {
         .and_then(|name| workspace.palettes.get(name))
     {
         for (key, value) in &palette.values {
+            if value.contains('\n') {
+                bail!(
+                    "palette {}: {key}: values can't contain newlines",
+                    palette_label(workspace)
+                );
+            }
             vars.insert(format!("palette.{key}"), value.clone());
         }
     }
@@ -170,6 +176,11 @@ pub fn workspace_vars(workspace: &Workspace) -> Result<Vars> {
             .map(String::as_str)
             .or(definition.default_value());
         if let Some(value) = value {
+            // Covers `[vars]` defaults; host values are checked below with
+            // their own file name.
+            if value.contains('\n') && !workspace.host.vars.contains_key(name) {
+                bail!("dfapp.toml: vars.{name}: the default can't contain newlines");
+            }
             vars.insert(name.clone(), value.to_string());
         }
     }
@@ -188,6 +199,10 @@ pub fn workspace_vars(workspace: &Workspace) -> Result<Vars> {
         }
     }
     Ok(vars)
+}
+
+fn palette_label(workspace: &Workspace) -> String {
+    workspace.palette_name().unwrap_or_default().to_string()
 }
 
 /// Values of secret variables that are long enough to search for.

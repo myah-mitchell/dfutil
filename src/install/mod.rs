@@ -246,12 +246,6 @@ pub fn install(
         None => None,
     };
 
-    if let Some(command) = &tool.post_install {
-        (context.log)(format!("{name}: running post_install"));
-        run_shell(context, name, command, resolved, &tool_dir)
-            .with_context(|| format!("{name}: post_install failed"))?;
-    }
-
     Ok(ToolRecord {
         current,
         previous,
@@ -261,7 +255,27 @@ pub fn install(
         sha256,
         verified,
         installed_at: crate::util::unix_now(),
+        skip_version: None,
     })
+}
+
+/// Runs a tool's `post_install` command, when it has one. The caller runs it
+/// after saving the install record, so a failure here never leaves the
+/// record describing a different version than the links point at.
+pub fn post_install(
+    context: &InstallContext,
+    name: &str,
+    tool: &ToolDef,
+    resolved: &Resolved,
+) -> Result<()> {
+    let Some(command) = &tool.post_install else {
+        return Ok(());
+    };
+    (context.log)(format!("{name}: running post_install"));
+    let tool_dir = context.paths.tools_dir.join(name);
+    run_shell(context, name, command, resolved, &tool_dir)
+        .with_context(|| format!("{name}: post_install failed"))?;
+    Ok(())
 }
 
 /// Directory name for a version, safe as a single path component.
@@ -606,9 +620,21 @@ fn install_uv(
     // uv writes absolute paths into the environments it creates, so it installs
     // straight into the final directory instead of a staging one.
     let final_dir = tool_dir.join(version_dir_name(&version));
-    if final_dir.exists() {
-        std::fs::remove_dir_all(&final_dir)?;
+    // A reinstall of the same version moves the working copy aside and puts
+    // it back if uv fails, so a failed reinstall doesn't break the tool.
+    let aside = tool_dir.join(format!(".replaced-{}", version_dir_name(&version)));
+    if aside.exists() {
+        std::fs::remove_dir_all(&aside)?;
     }
+    if final_dir.exists() {
+        std::fs::rename(&final_dir, &aside)?;
+    }
+    let restore = || {
+        std::fs::remove_dir_all(&final_dir).ok();
+        if aside.exists() {
+            std::fs::rename(&aside, &final_dir).ok();
+        }
+    };
     (context.log)(format!("{name}: uv tool install {package}=={version}"));
     let mut command = Command::new(uv);
     command
@@ -622,17 +648,19 @@ fn install_uv(
         .env("UV_TOOL_BIN_DIR", final_dir.join("bin"))
         .env("PATH", path_with_bin(context.paths));
     if let Err(error) = crate::util::run_checked(&mut command) {
-        std::fs::remove_dir_all(&final_dir).ok();
+        restore();
         return Err(error.context(format!("{name}: uv tool install failed")));
     }
     let mut files = Vec::new();
     for (link_name, _) in bin_specs(name, tool) {
         let file = PathBuf::from("bin").join(&link_name);
         if !final_dir.join(&file).exists() {
+            restore();
             bail!("{name}: uv didn't create a `{link_name}` binary; set `bins`");
         }
         files.push((file.clone(), file));
     }
+    std::fs::remove_dir_all(&aside).ok();
     let links = create_links(context.paths, tool_dir, &final_dir, &files)?;
     Ok(InstalledVersion {
         version,
@@ -807,6 +835,7 @@ pub fn rollback(paths: &Paths, name: &str, record: &ToolRecord) -> Result<ToolRe
         current: InstalledVersion { links, ..previous },
         previous: Some(record.current.clone()),
         installed_at: crate::util::unix_now(),
+        skip_version: Some(record.current.version.clone()),
         ..record.clone()
     })
 }

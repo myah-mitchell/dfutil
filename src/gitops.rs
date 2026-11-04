@@ -386,9 +386,22 @@ pub fn staged_leaks(repo: &Path, secrets: &[(String, String)]) -> Result<Vec<Lea
     )?;
     let mut leaks = Vec::new();
     let mut file = String::new();
+    // Headers only appear between `diff --git` and the first `@@`; inside a
+    // hunk, a `+++ ` line is an added line that starts with `++ `.
+    let mut in_hunk = false;
     for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ ") {
-            file = path.strip_prefix("b/").unwrap_or(path).to_string();
+        if line.starts_with("diff --git ") {
+            in_hunk = false;
+            continue;
+        }
+        if line.starts_with("@@") {
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            if let Some(path) = line.strip_prefix("+++ ") {
+                file = path.strip_prefix("b/").unwrap_or(path).to_string();
+            }
             continue;
         }
         let Some(added) = line.strip_prefix('+') else {
@@ -561,5 +574,23 @@ pub(crate) mod tests {
         );
         let none = staged_leaks(&clone, &[("other".into(), "absent".into())]).unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn added_lines_starting_with_plus_signs_are_still_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_upstream, _seed, clone) = repos(dir.path());
+        // In the diff this line reads `+++ token = hunter22`, like a header.
+        std::fs::write(clone.join("notes"), "++ token = hunter22\n").unwrap();
+        git_in(&clone, &["add", "notes"]);
+        let secrets = vec![("token".to_string(), "hunter22".to_string())];
+        let leaks = staged_leaks(&clone, &secrets).unwrap();
+        assert_eq!(
+            leaks,
+            [Leak {
+                file: "notes".into(),
+                var: "token".into()
+            }]
+        );
     }
 }

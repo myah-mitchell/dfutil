@@ -10,6 +10,13 @@ use std::process::{Command, Output, Stdio};
 /// Writes `contents` to `path` through a temporary file in the same directory,
 /// so readers never see a half-written file. Creates parent directories.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    write_atomic_with_mode(path, contents, None)
+}
+
+/// Like `write_atomic`, but gives the file `mode` instead of the replaced
+/// file's permissions. The mode is set on the temporary file before it's
+/// renamed into place, so the contents are never visible with wider access.
+pub fn write_atomic_with_mode(path: &Path, contents: &[u8], mode: Option<u32>) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
@@ -18,7 +25,10 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("creating a temporary file in {}", parent.display()))?;
     temporary.write_all(contents)?;
     temporary.as_file().sync_all()?;
-    if let Ok(metadata) = std::fs::metadata(path) {
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(mode))?;
+    } else if let Ok(metadata) = std::fs::metadata(path) {
         // Keep the original permissions (an executable script stays executable).
         std::fs::set_permissions(temporary.path(), metadata.permissions())?;
     }

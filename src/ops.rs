@@ -52,7 +52,8 @@ impl Session {
         Ok(())
     }
 
-    fn lock(&self) -> Result<Vec<Lock>> {
+    /// Takes the state locks every changing operation holds.
+    pub(crate) fn lock(&self) -> Result<Vec<Lock>> {
         let paths = &self.workspace.paths;
         let mut locks = vec![Lock::acquire(&paths.state_dir)?];
         if let Some(directory) = paths.tool_state.parent()
@@ -245,6 +246,9 @@ impl Session {
     /// Removes tools from this host: drops them from `tools`, and excludes
     /// them when a preset still selects them.
     pub fn uninstall(&mut self, names: &[String], log: Log) -> Result<ApplyReport> {
+        // Refusing (another tool still needs one) puts host.toml back as it was.
+        let original = std::fs::read(&self.host_path)
+            .with_context(|| format!("reading {}", self.host_path.display()))?;
         for name in names {
             crate::config_edit::host_list(&self.host_path, "tools", name, false)?;
         }
@@ -257,10 +261,10 @@ impl Session {
         self.reload()?;
         for name in names {
             if self.selection.tools.contains(name) {
-                bail!(
-                    "{name} is still required by another selected tool ({})",
-                    self.selection.reasons[name].join(", ")
-                );
+                let reasons = self.selection.reasons[name].join(", ");
+                crate::util::write_atomic(&self.host_path, &original)?;
+                self.reload()?;
+                bail!("{name} is still required by another selected tool ({reasons})");
             }
         }
         let only: BTreeSet<String> = names.iter().cloned().collect();
@@ -447,6 +451,12 @@ kind = "script"
 install = "true"
 version = "echo 2.0.0"
 
+[tools.needy]
+kind = "script"
+install = "true"
+version = "echo 3.0.0"
+requires = ["hello"]
+
 [presets.base]
 tools = ["hello"]
 "#;
@@ -505,6 +515,19 @@ tools = ["hello"]
         assert!(!session.tool_state().unwrap().tools.contains_key("extra"));
 
         assert!(session.install(&["nope".into()], &quiet).is_err());
+    }
+
+    #[test]
+    fn a_refused_uninstall_leaves_the_host_config_alone() {
+        let (home, host) = setup();
+        let quiet = |_: String| {};
+        let mut session = Session::load(&host, Some(home.path()), true).unwrap();
+        session.install(&["needy".into()], &quiet).unwrap();
+        let before = std::fs::read(&host).unwrap();
+        let error = session.uninstall(&["hello".into()], &quiet).unwrap_err();
+        assert!(error.to_string().contains("still required"), "{error}");
+        assert_eq!(std::fs::read(&host).unwrap(), before);
+        assert!(session.selection.tools.contains("hello"));
     }
 
     #[test]
