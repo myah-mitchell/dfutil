@@ -60,7 +60,7 @@ Running `dfapp` with no arguments on a terminal opens the UI.
 
 | Command | Does |
 | --- | --- |
-| `init --repo <path-or-url>` | Writes `~/.config/dfapp/host.toml`, cloning the repo first when given a URL |
+| `init --repo <path-or-url>` | Writes `~/.config/dfapp/host.toml`, cloning the repo first when given a URL. On a terminal it asks for presets and for variables without a default |
 | `status [--all]` | Lists tools with installed and available versions |
 | `plan`, `apply` | Shows or makes the changes: installs, upgrades, removals, dotfile links. `--reinstall [names]` and `--only <names>` narrow it |
 | `install`, `uninstall <tools>` | One-off changes on this host, saved to `host.toml` |
@@ -75,7 +75,7 @@ Running `dfapp` with no arguments on a terminal opens the UI.
 | `palette list`, `palette set <name>` | Switches the color palette and re-renders templates |
 | `var list`, `var set <name> <value>` | Template variables for this host |
 | `hook install` | Installs the pre-commit hook that blocks secret values |
-| `schedule enable [--frequency daily\|weekly]`, `disable`, `status` | Scheduled updates |
+| `schedule enable [--frequency daily\|weekly]`, `disable`, `status` | Scheduled updates. `--interval` is an alias for `--frequency` |
 | `config validate`, `config show` | Checks the configuration, or prints this host's merged choices |
 
 `apply`, `reinstall`, and `uninstall` ask for confirmation on a terminal and refuse without `--yes` when there's none.
