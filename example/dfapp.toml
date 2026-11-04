@@ -1,0 +1,107 @@
+# Example content repo for dfapp. Copy this directory into a git repo of
+# your own and point `dfapp init --repo` at it.
+
+[settings]
+palette = "mocha"
+presets = ["base"]
+shells = ["zsh"]
+# How long version lookups stay cached, in seconds.
+cache_ttl = 3600
+
+[vars]
+editor = "nvim"
+git_name = { description = "Name for git commits" }
+git_email = { description = "Email for git commits" }
+
+[packages.zsh]
+description = "zsh startup files"
+
+[packages.git]
+description = "git config, templated with your name and email"
+
+[packages.starship]
+description = "Prompt config, colored from the active palette"
+
+[tools.ripgrep]
+description = "Fast recursive grep"
+repo = "BurntSushi/ripgrep"
+crate = "ripgrep"
+pin = "15"
+bins = ["rg"]
+assets.linux-x86_64 = "ripgrep-*-x86_64-unknown-linux-musl.tar.gz"
+assets.linux-aarch64 = "ripgrep-*-aarch64-unknown-linux-gnu.tar.gz"
+
+[tools.fd]
+description = "Simple, fast find"
+repo = "sharkdp/fd"
+crate = "fd-find"
+bins = ["fd"]
+assets.linux-x86_64 = "fd-*-x86_64-unknown-linux-musl.tar.gz"
+assets.linux-aarch64 = "fd-*-aarch64-unknown-linux-musl.tar.gz"
+
+[tools.starship]
+description = "Shell prompt"
+repo = "starship/starship"
+crate = "starship"
+bins = ["starship"]
+assets.linux-x86_64 = "starship-x86_64-unknown-linux-musl.tar.gz"
+assets.linux-aarch64 = "starship-aarch64-unknown-linux-musl.tar.gz"
+init.zsh = "starship init zsh"
+init.bash = "starship init bash"
+init.nushell = "starship init nu"
+
+[tools.zoxide]
+description = "Smarter cd"
+repo = "ajeetdsouza/zoxide"
+crate = "zoxide"
+bins = ["zoxide"]
+assets.linux-x86_64 = "zoxide-*-x86_64-unknown-linux-musl.tar.gz"
+assets.linux-aarch64 = "zoxide-*-aarch64-unknown-linux-musl.tar.gz"
+init.zsh = "zoxide init zsh"
+init.nushell = "zoxide init nushell"
+
+[tools.nushell]
+description = "Nushell"
+repo = "nushell/nushell"
+bins = ["nu"]
+assets.linux-x86_64 = "nu-*-x86_64-unknown-linux-musl.tar.gz"
+assets.linux-aarch64 = "nu-*-aarch64-unknown-linux-musl.tar.gz"
+
+[tools.node]
+description = "Node.js runtime, needed by npm tools"
+repo = "nodejs/node"
+pin = "24"
+assets.linux-x86_64 = "node-*-linux-x64.tar.xz"
+assets.linux-aarch64 = "node-*-linux-arm64.tar.xz"
+bins = ["node=bin/node", "npm=bin/npm", "npx=bin/npx"]
+
+[tools.claude]
+description = "Claude Code, through its own installer"
+kind = "script"
+install = "curl -fsSL https://claude.ai/install.sh | bash"
+version = "claude --version | cut -d' ' -f1"
+
+[tools.ccstatusline]
+description = "Claude Code status line"
+kind = "npm"
+pin = "2"
+requires = ["node"]
+
+[presets.base]
+description = "Shell essentials for every host"
+tools = ["ripgrep", "fd", "starship", "zoxide"]
+packages = ["zsh", "git", "starship"]
+
+[presets.claude]
+description = "Claude Code and its status line"
+extends = ["base"]
+tools = ["claude", "ccstatusline"]
+
+[presets.nushell]
+description = "Nushell as a secondary shell"
+tools = ["nushell"]
+shells = ["nushell"]
+
+[presets.cargo]
+description = "Build Rust tools from source"
+build = "source"

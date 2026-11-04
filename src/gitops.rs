@@ -13,6 +13,16 @@ fn git(repo: &Path) -> Command {
     command
         .arg("-C")
         .arg(repo)
+        // Output is parsed and shown in the TUI; the user's config may force color.
+        .args([
+            "-c",
+            "color.ui=never",
+            "-c",
+            "color.status=never",
+            "-c",
+            "color.diff=never",
+        ])
+        .args(["-c", "color.branch=never"])
         // Never stop for a credential prompt in a scheduled or TUI run.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C");

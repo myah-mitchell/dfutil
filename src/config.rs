@@ -60,7 +60,7 @@ pub struct Settings {
     /// Presets `dfapp init` selects when none are given.
     #[serde(default)]
     pub presets: Vec<String>,
-    /// Shells to generate init scripts for (`zsh`, `nu`, `bash`).
+    /// Shells to generate init scripts for (`zsh`, `bash`, `nushell`).
     #[serde(default)]
     pub shells: Vec<String>,
     #[serde(default)]
@@ -286,26 +286,29 @@ impl RepoConfig {
 pub struct HostConfig {
     /// Path to the main content repo checkout.
     pub repo: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presets: Vec<String>,
     /// Tools added on top of the presets.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
     /// Tools removed from what the presets select.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_packages: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<Scope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<BuildMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub palette: Option<String>,
     /// Values for template variables, overriding repo defaults.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: BTreeMap<String, String>,
     /// Extra secondary sources for this host only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sources: BTreeMap<String, SourceDef>,
 }
 
