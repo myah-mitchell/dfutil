@@ -13,7 +13,7 @@ dfapp installs command-line tools and deploys dotfiles from a content repo you k
 - Generates shell init scripts for zsh, bash, and nushell.
 - Runs `dfapp update` on a systemd user timer, or prints a cron line where there's no systemd user session.
 
-Linux (x86_64 and aarch64, WSL2 included) is supported. Platform handling is kept in one module so macOS can be added later.
+Linux (x86_64 and aarch64, WSL2 included) is supported. Platform handling is kept in one module so macOS can be added later: the config already accepts `macos` platform keys, and the missing piece is a launchd agent for scheduled updates.
 
 ## Requirements
 
