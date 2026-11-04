@@ -3,12 +3,15 @@
 //! thin layers over the modules here.
 
 pub mod config;
+pub mod config_edit;
 pub mod deploy;
+pub mod gitops;
 pub mod install;
 pub mod paths;
 pub mod plan;
 pub mod platform;
 pub mod remote;
+pub mod schedule;
 pub mod selection;
 pub mod state;
 pub mod util;
