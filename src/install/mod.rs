@@ -693,6 +693,20 @@ pub fn path_with_bin(paths: &Paths) -> std::ffi::OsString {
     std::env::join_paths(entries).unwrap_or_default()
 }
 
+/// A `sh -c <command>` with the bin directory on `PATH` and `HOME` set to the
+/// home dfapp deploys into. They differ from the caller's only under
+/// `DFAPP_HOME` or `--home`, where a script writing under `$HOME` must land in
+/// that home, not the real one.
+pub fn shell(paths: &Paths, command: &str) -> Command {
+    let mut process = Command::new("sh");
+    process
+        .arg("-c")
+        .arg(command)
+        .env("PATH", path_with_bin(paths))
+        .env("HOME", &paths.home);
+    process
+}
+
 /// Runs a script-tool or post-install command with `sh -c` in the repo root,
 /// passing the install context as `DFAPP_*` variables. Returns stdout.
 fn run_shell(
@@ -702,12 +716,9 @@ fn run_shell(
     resolved: &Resolved,
     tool_dir: &Path,
 ) -> Result<String> {
-    let mut process = Command::new("sh");
+    let mut process = shell(context.paths, command);
     process
-        .arg("-c")
-        .arg(command)
         .current_dir(context.repo_root)
-        .env("PATH", path_with_bin(context.paths))
         .env("DFAPP_TOOL", name)
         .env(
             "DFAPP_VERSION",
@@ -740,13 +751,11 @@ pub fn uninstall(
     if record.method == Method::Script
         && let Some(command) = tool.and_then(|tool| tool.uninstall.as_deref())
     {
-        let mut process = Command::new("sh");
+        let mut process = shell(paths, command);
         process
-            .arg("-c")
-            .arg(command)
             .current_dir(repo_root)
-            .env("PATH", path_with_bin(paths))
             .env("DFAPP_TOOL", name)
+            .env("DFAPP_PREFIX", &paths.prefix)
             .env("DFAPP_BIN_DIR", &paths.bin_dir)
             .env("DFAPP_TOOL_DIR", &tool_dir);
         crate::util::run_checked(&mut process)
@@ -815,6 +824,14 @@ mod tests {
         let paths = Paths::for_home(home, Scope::User);
         let remote = Remote::new(&paths.cache_dir, std::time::Duration::from_secs(3600), true);
         (paths, remote)
+    }
+
+    #[test]
+    fn shell_commands_see_the_deploy_home() {
+        let home = tempfile::tempdir().unwrap();
+        let (paths, _) = context_parts(home.path());
+        let output = shell(&paths, "printf %s \"$HOME\"").output().unwrap();
+        assert_eq!(output.stdout, home.path().as_os_str().as_encoded_bytes());
     }
 
     #[test]

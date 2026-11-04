@@ -10,7 +10,6 @@ use crate::paths::Paths;
 use anyhow::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// File extension for a shell's init scripts.
 pub fn extension(shell: &str) -> Result<&'static str> {
@@ -43,10 +42,7 @@ pub fn generate(
         if !shells.contains(shell) {
             continue;
         }
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .env("PATH", super::path_with_bin(paths))
+        let output = super::shell(paths, command)
             .output()
             .with_context(|| format!("{name}: running init command for {shell}"))?;
         if !output.status.success() {

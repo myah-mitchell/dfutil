@@ -113,7 +113,7 @@ GitHub limits unauthenticated API calls to 60 an hour. dfapp uses `GITHUB_TOKEN`
 
 ### Script tools
 
-A script tool runs `install` with `sh -c` from the repo root, then runs `version` and takes the first version-looking string from its output. The commands get these environment variables:
+A script tool runs `install` with `sh -c` from the repo root, then runs `version` and takes the first version-looking string from its output. The commands, along with `post_install`, `uninstall`, and `init` commands, get these environment variables:
 
 | Variable | Value |
 | --- | --- |
@@ -122,7 +122,9 @@ A script tool runs `install` with `sh -c` from the repo root, then runs `version
 | `DFAPP_PREFIX`, `DFAPP_BIN_DIR` | The install prefix and its bin directory |
 | `DFAPP_TOOL_DIR` | A directory the script may install into |
 | `DFAPP_REPO` | The main content repo |
-| `DFAPP_SCOPE`, `DFAPP_OS`, `DFAPP_ARCH` | The scope and platform |
+| `DFAPP_SCOPE`, `DFAPP_OS`, `DFAPP_ARCH`, `DFAPP_WSL` | The scope and platform; `DFAPP_WSL` is `1` under WSL |
+| `HOME` | The home dfapp deploys into, which differs from your own only under `DFAPP_HOME` |
+| `PATH` | Your `PATH` with the bin directory first |
 
 Only `bins` entries in `name=path` form are linked for a script tool, with the path relative to `DFAPP_TOOL_DIR`. A script that puts its own launcher on `PATH`, like Claude Code's installer, needs no `bins`.
 
