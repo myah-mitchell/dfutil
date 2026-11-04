@@ -68,11 +68,11 @@ assets.linux-x86_64 = "nu-*-x86_64-unknown-linux-musl.tar.gz"
 assets.linux-aarch64 = "nu-*-aarch64-unknown-linux-musl.tar.gz"
 
 [tools.node]
-description = "Node.js runtime, needed by npm tools"
-repo = "nodejs/node"
-pin = "24"
-assets.linux-x86_64 = "node-*-linux-x64.tar.xz"
-assets.linux-aarch64 = "node-*-linux-arm64.tar.xz"
+description = "Node.js LTS from nodejs.org, needed by npm tools"
+# nodejs/node GitHub releases carry no binaries, so a script fetches them.
+kind = "script"
+install = "sh scripts/install-node.sh"
+version = "\"$DFAPP_TOOL_DIR/bin/node\" --version"
 bins = ["node=bin/node", "npm=bin/npm", "npx=bin/npx"]
 
 [tools.claude]
