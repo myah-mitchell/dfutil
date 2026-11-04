@@ -294,7 +294,15 @@ fn deploy_one(
         if on_disk.as_deref() != Some(sha256.as_str()) {
             rerendered = true;
             if !options.dry_run {
-                write_preserving_mode(&output, rendered_text.as_bytes(), &entry.source)?;
+                // Rendered secrets stay readable by the owner only.
+                let private = text.lines().flat_map(template::line_vars).any(|name| {
+                    workspace
+                        .config
+                        .vars
+                        .get(&name)
+                        .is_some_and(|var| var.is_secret())
+                });
+                write_preserving_mode(&output, rendered_text.as_bytes(), &entry.source, private)?;
             }
         }
         (
@@ -367,15 +375,20 @@ fn deploy_one(
 
 /// Writes a rendered file with the template's permission bits, so an
 /// executable script template renders executable.
-fn write_preserving_mode(output: &Path, contents: &[u8], template: &Path) -> Result<()> {
+/// With `private`, group and other permissions are dropped.
+fn write_preserving_mode(
+    output: &Path,
+    contents: &[u8],
+    template: &Path,
+    private: bool,
+) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     crate::util::write_atomic(output, contents)?;
-    if let Ok(metadata) = std::fs::metadata(template) {
-        std::fs::set_permissions(
-            output,
-            std::fs::Permissions::from_mode(metadata.permissions().mode() & 0o777),
-        )?;
-    }
+    let mode = std::fs::metadata(template)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+        .unwrap_or(0o644);
+    let mode = if private { mode & 0o700 } else { mode };
+    std::fs::set_permissions(output, std::fs::Permissions::from_mode(mode))?;
     Ok(())
 }
 
@@ -495,6 +508,42 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn renders_holding_secrets_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let repo = home.path().join("dotfiles/zsh");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join(".netrc.tmpl"), "password {{ token }}\n").unwrap();
+        std::fs::write(repo.join(".plain.tmpl"), "editor {{ editor }}\n").unwrap();
+        for file in [".netrc.tmpl", ".plain.tmpl"] {
+            std::fs::set_permissions(repo.join(file), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        let host = HostConfig {
+            presets: vec!["base".into()],
+            vars: [("token".to_string(), "hunter22".to_string())].into(),
+            ..HostConfig::default()
+        };
+        let workspace = workspace_with(home.path(), SAMPLE, host).unwrap();
+        let selection = Selection::compute(&workspace).unwrap();
+        let mut state = DeployState::default();
+        deploy(&workspace, &selection, &mut state, &Options::default()).unwrap();
+        let mode = |name: &str| {
+            std::fs::metadata(home.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(".netrc"), 0o600);
+        assert_eq!(mode(".plain"), 0o644);
+        assert_eq!(
+            std::fs::read_to_string(home.path().join(".netrc")).unwrap(),
+            "password hunter22\n"
+        );
     }
 
     #[test]

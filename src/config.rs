@@ -647,6 +647,31 @@ impl Workspace {
                     "{origin}: tools.{name}: names may only use letters, digits, `.`, `_`, and `-`"
                 ));
             }
+            // Link names and paths come from a repo that may be shared; keep
+            // every link inside the prefix and every source inside the install.
+            for (link_name, path) in tool.bin_specs(name) {
+                if !is_valid_name(&link_name) {
+                    problems.push(format!(
+                        "{origin}: tools.{name}.bins: `{link_name}` isn't a plain file name"
+                    ));
+                }
+                if let Some(path) = path
+                    && !is_contained_relative(&path)
+                {
+                    problems.push(format!(
+                        "{origin}: tools.{name}.bins: `{path}` must be a relative path without `..`"
+                    ));
+                }
+            }
+            for (destination, path) in &tool.links {
+                for (key, value) in [("destination", destination), ("path", path)] {
+                    if !is_contained_relative(value) {
+                        problems.push(format!(
+                            "{origin}: tools.{name}.links: {key} `{value}` must be a relative path without `..`"
+                        ));
+                    }
+                }
+            }
         }
 
         for (name, preset) in &config.presets {
@@ -795,6 +820,15 @@ fn merge_overlay(
     }
 }
 
+/// A non-empty relative path with no `..`, `.`, or root components.
+pub fn is_contained_relative(path: &str) -> bool {
+    let path = Path::new(path);
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
 /// Tool, preset, and package names end up in paths and file names, so they
 /// stay to a safe character set.
 pub fn is_valid_name(name: &str) -> bool {
@@ -890,6 +924,32 @@ tools = ["ccstatusline"]
             host,
             config,
         )
+    }
+
+    #[test]
+    fn rejects_links_and_bins_that_escape() {
+        let home = tempfile::tempdir().unwrap();
+        let broken = SAMPLE
+            .replace("bins = [\"rg\"]", "bins = [\"rg=../../etc/rg\", \"../x\"]")
+            .replace(
+                "[tools.ccstatusline]",
+                "[tools.plugin]\nkind = \"script\"\ninstall = \"true\"\nlinks.\"../.bashrc\" = \"x\"\nlinks.\"share/ok\" = \"/etc/passwd\"\n\n[tools.ccstatusline]",
+            );
+        let error = workspace_with(home.path(), &broken, HostConfig::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("tools.ripgrep.bins: `../../etc/rg`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("tools.ripgrep.bins: `../x` isn't a plain file name"),
+            "{error}"
+        );
+        assert!(error.contains("links: destination `../.bashrc`"), "{error}");
+        assert!(error.contains("links: path `/etc/passwd`"), "{error}");
+        assert!(is_contained_relative("share/zellij/plugins/a.wasm"));
+        assert!(!is_contained_relative("./a") && !is_contained_relative(""));
     }
 
     #[test]
