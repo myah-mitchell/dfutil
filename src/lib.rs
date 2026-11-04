@@ -3,8 +3,10 @@
 //! thin layers over the modules here.
 
 pub mod config;
+pub mod deploy;
 pub mod install;
 pub mod paths;
+pub mod plan;
 pub mod platform;
 pub mod remote;
 pub mod selection;
