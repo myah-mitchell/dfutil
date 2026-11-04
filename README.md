@@ -80,6 +80,23 @@ Running `dfapp` with no arguments on a terminal opens the UI.
 
 `apply`, `reinstall`, and `uninstall` ask for confirmation on a terminal and refuse without `--yes` when there's none.
 
+## Terminal UI
+
+`dfapp` with no arguments opens five tabs: Tools, Presets, Dotfiles, Sync, and Settings. Actions run one at a time, with progress in the log pane, and press `?` for the full key list.
+
+| Keys | Where | Does |
+| --- | --- | --- |
+| `Tab`, `1` to `5` | Anywhere | Switches tabs |
+| `j`, `k`, `g`, `G` | Lists | Moves down, up, to the top, to the bottom |
+| `l`, `q` | Anywhere | Enlarges the log, quits |
+| `R` | Every tab but Presets | Refreshes the tab |
+| `Space`, `m`, `/` | Tools | Marks the tool, marks every visible tool, filters the list |
+| `a`, `r`, `b` | Tools | Applies the planned changes, reinstalls the marked tools, rolls back |
+| `i`, `u`, `n` | Tools | Installs or uninstalls the marked tools, adds a tool to `dfapp.toml` |
+| `Space`, `n` | Presets | Toggles a preset, creates one from the marked tools |
+| `d`, `c`, `p`, `e`, `v` | Dotfiles | Deploys, captures, cycles the palette, edits a variable, shows only changes |
+| `s`, `U`, `J`, `K` | Sync | Syncs, runs a full update, scrolls the diff a page |
+
 ## Use from ansible
 
 Every command takes `--json`. The output always has a `changed` key, and commands that install or sync also have `failed`. The exit code is non-zero on failure.
