@@ -33,7 +33,7 @@ zsh = {}
 kind = "script"
 category = "greet"
 description = "says hello"
-install = "mkdir -p \"$DFAPP_TOOL_DIR\" && printf '#!/bin/sh\necho hi\n' > \"$DFAPP_TOOL_DIR/hello\" && chmod +x \"$DFAPP_TOOL_DIR/hello\""
+install = "mkdir -p \"$DFUTIL_TOOL_DIR\" && printf '#!/bin/sh\necho hi\n' > \"$DFUTIL_TOOL_DIR/hello\" && chmod +x \"$DFUTIL_TOOL_DIR/hello\""
 version = "echo 1.0.0"
 bins = ["hello=hello"]
 
@@ -69,7 +69,7 @@ impl Fixture {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         };
-        write("dfapp.toml", REPO);
+        write("dfutil.toml", REPO);
         write("zsh/.zshrc", "plain\n");
         write(
             "zsh/.config/zsh/theme.zsh.tmpl",
@@ -77,7 +77,7 @@ impl Fixture {
         );
         write("palettes/mocha.toml", "base = \"#111111\"\n");
         write("palettes/latte.toml", "base = \"#eeeeee\"\n");
-        let host = home.path().join(".config/dfapp/host.toml");
+        let host = home.path().join(".config/dfutil/host.toml");
         let quiet = |_: String| {};
         ops::init(
             &host,
@@ -97,11 +97,11 @@ impl Fixture {
     }
 
     fn config_text(&self) -> String {
-        std::fs::read_to_string(self.home.path().join("dotfiles/dfapp.toml")).unwrap()
+        std::fs::read_to_string(self.home.path().join("dotfiles/dfutil.toml")).unwrap()
     }
 
     fn host_text(&self) -> String {
-        std::fs::read_to_string(self.home.path().join(".config/dfapp/host.toml")).unwrap()
+        std::fs::read_to_string(self.home.path().join(".config/dfutil/host.toml")).unwrap()
     }
 
     /// Runs one job to completion on this thread, as the worker would.
@@ -326,7 +326,7 @@ fn every_panel_renders_with_a_detail_pane() {
 
     let screen = fixture.screen();
     for text in [
-        " dfapp ",
+        " dfutil ",
         "base",
         "palette mocha",
         "1 Tools",
@@ -383,7 +383,7 @@ fn small_terminals_do_not_panic() {
             draw(&fixture.app, width, height);
         }
     }
-    assert!(buffer_text(&draw(&fixture.app, 20, 5)).contains("dfapp"));
+    assert!(buffer_text(&draw(&fixture.app, 20, 5)).contains("dfutil"));
     fixture.ch('1');
     for modal in ['?', 'L'] {
         fixture.ch(modal);

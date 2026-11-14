@@ -16,16 +16,16 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "dfapp",
+    name = "dfutil",
     version,
     about = "Install command-line tools and deploy dotfiles from a content repo"
 )]
 pub struct Cli {
     /// Host config file.
-    #[arg(long, global = true, env = "DFAPP_HOST_CONFIG")]
+    #[arg(long, global = true, env = "DFUTIL_HOST_CONFIG")]
     pub host_config: Option<PathBuf>,
     /// Use a different home directory (for testing a config in a scratch home).
-    #[arg(long, global = true, env = "DFAPP_HOME", hide = true)]
+    #[arg(long, global = true, env = "DFUTIL_HOME", hide = true)]
     pub home: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long, global = true)]
@@ -154,7 +154,7 @@ impl ApplyArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ToolCommand {
-    /// Add a tool definition to dfapp.toml.
+    /// Add a tool definition to dfutil.toml.
     Add(ToolAddArgs),
 }
 
@@ -187,7 +187,7 @@ pub struct ToolAddArgs {
     /// Also add the tool to this host.
     #[arg(long)]
     pub install: bool,
-    /// File to add it to (default: the main repo's dfapp.toml).
+    /// File to add it to (default: the main repo's dfutil.toml).
     #[arg(long)]
     pub file: Option<PathBuf>,
 }
@@ -196,7 +196,7 @@ pub struct ToolAddArgs {
 pub enum PresetCommand {
     /// List presets and what they select.
     List,
-    /// Create a preset in dfapp.toml.
+    /// Create a preset in dfutil.toml.
     Create {
         name: String,
         #[arg(long, value_delimiter = ',')]
@@ -309,7 +309,7 @@ pub fn run(cli: Cli) -> Result<i32> {
     let command = match cli.command {
         Some(command) => command,
         None if interactive && !cli.json => Command::Tui,
-        None => bail!("no command given; see `dfapp --help`"),
+        None => bail!("no command given; see `dfutil --help`"),
     };
 
     if let Command::Init {
@@ -348,7 +348,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             .collect();
         if !unset.is_empty() && !cli.json {
             println!(
-                "set these template variables before deploying: {} (`dfapp var set <name> <value>`)",
+                "set these template variables before deploying: {} (`dfutil var set <name> <value>`)",
                 unset
                     .iter()
                     .map(|name| name.as_str())
@@ -359,7 +359,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         output.done(
             true,
             &format!(
-                "wrote {} (repo {}); run `dfapp apply` next",
+                "wrote {} (repo {}); run `dfutil apply` next",
                 host_path.display(),
                 checkout.display()
             ),
@@ -530,12 +530,12 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Var(VarCommand::Set { name, value }) => {
             if !session.workspace.config.vars.contains_key(&name) {
-                bail!("`{name}` isn't declared in [vars] of dfapp.toml");
+                bail!("`{name}` isn't declared in [vars] of dfutil.toml");
             }
             crate::config_edit::host_var(&session.host_path, &name, &value)?;
             output.done(
                 true,
-                &format!("set {name}; run `dfapp deploy` to re-render templates"),
+                &format!("set {name}; run `dfutil deploy` to re-render templates"),
                 json!({ "var": name }),
             );
             Ok(0)
@@ -640,7 +640,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(output.report(&report))
         }
         Command::Hook(HookCommand::Install) => {
-            let exe = std::env::current_exe().context("finding the dfapp executable")?;
+            let exe = std::env::current_exe().context("finding the dfutil executable")?;
             let hooks = crate::gitops::install_hooks(&session.workspace, &exe)?;
             output.done(
                 true,
@@ -653,7 +653,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             let home = session.workspace.paths.home.clone();
             match command {
                 ScheduleCommand::Enable { frequency } => {
-                    let exe = std::env::current_exe().context("finding the dfapp executable")?;
+                    let exe = std::env::current_exe().context("finding the dfutil executable")?;
                     let host = std::fs::canonicalize(&session.host_path)
                         .unwrap_or(session.host_path.clone());
                     match crate::schedule::enable(&home, &exe, &host, frequency)? {
@@ -793,7 +793,7 @@ fn init_prompts(
                 .iter()
                 .find(|name| !config.presets.contains_key(*name))
             {
-                bail!("no preset named `{unknown}`; rerun `dfapp preset select` to fix");
+                bail!("no preset named `{unknown}`; rerun `dfutil preset select` to fix");
             }
             for name in &current {
                 crate::config_edit::host_list(host_path, "presets", name, false)?;
@@ -943,7 +943,7 @@ fn preset(session: &mut Session, command: PresetCommand, output: &Output) -> Res
                 crate::config_edit::host_list(&session.host_path, "presets", &name, true)?;
             output.done(
                 changed,
-                &format!("selected {name}; run `dfapp apply`"),
+                &format!("selected {name}; run `dfutil apply`"),
                 json!({ "preset": name }),
             );
         }
@@ -952,7 +952,7 @@ fn preset(session: &mut Session, command: PresetCommand, output: &Output) -> Res
                 crate::config_edit::host_list(&session.host_path, "presets", &name, false)?;
             output.done(
                 changed,
-                &format!("deselected {name}; run `dfapp apply` to remove its tools"),
+                &format!("deselected {name}; run `dfutil apply` to remove its tools"),
                 json!({ "preset": name }),
             );
         }
@@ -971,7 +971,7 @@ fn hook_pre_commit(
     if leaks.is_empty() {
         return Ok(0);
     }
-    eprintln!("dfapp: commit blocked; staged changes contain secret template values:");
+    eprintln!("dfutil: commit blocked; staged changes contain secret template values:");
     for leak in &leaks {
         eprintln!("  {}: the value of `{}`", leak.file, leak.var);
     }

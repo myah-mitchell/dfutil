@@ -1,4 +1,4 @@
-//! Persistent records of what dfapp installed and deployed, and a lock so two
+//! Persistent records of what dfutil installed and deployed, and a lock so two
 //! runs (say, the scheduled update and an open TUI) never write at once.
 
 use anyhow::{Context, Result, bail};
@@ -35,17 +35,17 @@ pub struct InstalledVersion {
     /// Version string (release tag, package version, or what the version
     /// command printed).
     pub version: String,
-    /// Directory holding this version's files, when dfapp owns one.
+    /// Directory holding this version's files, when dfutil owns one.
     pub install_dir: Option<PathBuf>,
-    /// Links dfapp created for this version (bin links and `links` entries).
+    /// Links dfutil created for this version (bin links and `links` entries).
     pub links: Vec<PathBuf>,
 }
 
-/// Everything dfapp knows about one installed tool.
+/// Everything dfutil knows about one installed tool.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ToolRecord {
     pub current: InstalledVersion,
-    /// The version replaced by the last install, kept for `dfapp rollback`.
+    /// The version replaced by the last install, kept for `dfutil rollback`.
     pub previous: Option<InstalledVersion>,
     pub method: Method,
     /// Source the version came from (`owner/name`, npm or PyPI package, crate).
@@ -76,12 +76,12 @@ pub struct RenderRecord {
     pub template: PathBuf,
     /// Where the rendered output lives (the link's target).
     pub output: PathBuf,
-    /// SHA-256 of the output as dfapp last wrote it; a different hash on disk
+    /// SHA-256 of the output as dfutil last wrote it; a different hash on disk
     /// means it was edited in place and has something to capture.
     pub sha256: String,
 }
 
-/// One symlink dfapp created in `$HOME`.
+/// One symlink dfutil created in `$HOME`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct LinkRecord {
     /// What the link points at: a repo file or a rendered output.
@@ -117,7 +117,7 @@ pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 /// An exclusive lock held for the duration of a run that changes state.
 ///
-/// It's an advisory `flock` on `dfapp.lock`, so the kernel releases it when
+/// It's an advisory `flock` on `dfutil.lock`, so the kernel releases it when
 /// the holding process exits, however it exits. The file holds the holder's
 /// pid for the error message only. Acquiring a lock this process already
 /// holds succeeds, so nested operations (sync, then deploy) don't deadlock.
@@ -134,11 +134,11 @@ fn held_locks() -> &'static std::sync::Mutex<BTreeMap<PathBuf, usize>> {
 }
 
 impl Lock {
-    /// Takes the lock in `state_dir`, failing if another dfapp process holds it.
+    /// Takes the lock in `state_dir`, failing if another dfutil process holds it.
     pub fn acquire(state_dir: &Path) -> Result<Lock> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("creating {}", state_dir.display()))?;
-        let path = state_dir.join("dfapp.lock");
+        let path = state_dir.join("dfutil.lock");
         let mut held = held_locks()
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -158,7 +158,7 @@ impl Lock {
             Err(std::fs::TryLockError::WouldBlock) => {
                 let holder = std::fs::read_to_string(&path).unwrap_or_default();
                 bail!(
-                    "another dfapp run (pid {}) is in progress; wait for it to finish",
+                    "another dfutil run (pid {}) is in progress; wait for it to finish",
                     holder.trim()
                 );
             }
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn lock_is_exclusive_nests_and_ignores_stale_files() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("dfapp.lock");
+        let path = dir.path().join("dfutil.lock");
         // A leftover file from a crashed run doesn't block anything.
         std::fs::write(&path, "999999999").unwrap();
         let outer = Lock::acquire(dir.path()).unwrap();

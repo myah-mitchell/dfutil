@@ -57,7 +57,7 @@ impl Remote {
     pub fn new(cache_dir: &Path, ttl: Duration, offline: bool) -> Self {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(300)))
-            .user_agent(concat!("dfapp/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("dfutil/", env!("CARGO_PKG_VERSION")))
             .build()
             .into();
         Self {

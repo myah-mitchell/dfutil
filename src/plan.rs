@@ -57,7 +57,7 @@ impl Action {
     }
 }
 
-/// One line of `dfapp status` / `plan`, and one row of the TUI tools table.
+/// One line of `dfutil status` / `plan`, and one row of the TUI tools table.
 #[derive(Clone, Debug, Serialize)]
 pub struct ToolRow {
     pub name: String,

@@ -1,4 +1,4 @@
-//! Configuration files: the content repo's `dfapp.toml`, palettes, and the
+//! Configuration files: the content repo's `dfutil.toml`, palettes, and the
 //! machine-local `host.toml`, plus loading them into one validated
 //! [`Workspace`].
 
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// File name of the content repo config.
-pub const REPO_CONFIG_FILE: &str = "dfapp.toml";
+pub const REPO_CONFIG_FILE: &str = "dfutil.toml";
 
 /// Whether tools with a crate are built from source or downloaded prebuilt.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub enum ToolKind {
     Script,
 }
 
-/// How `dfapp sync` integrates upstream commits.
+/// How `dfutil sync` integrates upstream commits.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PullMode {
@@ -49,7 +49,7 @@ pub enum PullMode {
     FfOnly,
 }
 
-/// The `[settings]` table of `dfapp.toml`: defaults a host can override.
+/// The `[settings]` table of `dfutil.toml`: defaults a host can override.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -57,7 +57,7 @@ pub struct Settings {
     pub palette: Option<String>,
     pub scope: Option<Scope>,
     pub build: Option<BuildMode>,
-    /// Presets `dfapp init` selects when none are given.
+    /// Presets `dfutil init` selects when none are given.
     #[serde(default)]
     pub presets: Vec<String>,
     /// Shells to generate init scripts for (`zsh`, `bash`, `nushell`).
@@ -83,7 +83,7 @@ pub enum VarDef {
 pub struct VarDetail {
     /// Default value; a host must supply one when this is absent.
     pub value: Option<String>,
-    /// Shown by `dfapp init` when asking for a value.
+    /// Shown by `dfutil init` when asking for a value.
     pub description: Option<String>,
     /// Secret values are never printed and are blocked from commits by the
     /// pre-commit hook.
@@ -119,7 +119,7 @@ pub struct SourceDef {
     /// or credential helper).
     pub url: String,
     pub branch: Option<String>,
-    /// Local checkout to use instead of `~/.local/share/dfapp/sources/<name>`.
+    /// Local checkout to use instead of `~/.local/share/dfutil/sources/<name>`.
     pub path: Option<String>,
 }
 
@@ -258,7 +258,7 @@ pub struct PresetDef {
     pub build: Option<BuildMode>,
 }
 
-/// Contents of a `dfapp.toml`.
+/// Contents of a `dfutil.toml`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
@@ -320,7 +320,7 @@ impl HostConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| {
             format!(
-                "reading {} (run `dfapp init` first on a new host)",
+                "reading {} (run `dfutil init` first on a new host)",
                 path.display()
             )
         })?;
@@ -497,7 +497,7 @@ impl Workspace {
             let present = path.join(".git").exists() || path.join(REPO_CONFIG_FILE).exists();
             if !present {
                 notes.push(format!(
-                    "source `{name}` isn't cloned at {} yet; run `dfapp sync` to fetch it",
+                    "source `{name}` isn't cloned at {} yet; run `dfutil sync` to fetch it",
                     path.display()
                 ));
             }
@@ -929,7 +929,7 @@ tools = ["ccstatusline"]
         Workspace::assemble(
             Paths::for_home(home, Scope::User),
             linux(),
-            home.join(".config/dfapp/host.toml"),
+            home.join(".config/dfutil/host.toml"),
             host,
             config,
         )
@@ -1028,7 +1028,7 @@ tools = ["ccstatusline"]
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("dfapp.toml: presets.claude.tools: unknown tool `nope`"),
+            error.contains("dfutil.toml: presets.claude.tools: unknown tool `nope`"),
             "{error}"
         );
         assert!(
@@ -1077,7 +1077,7 @@ tools = ["ccstatusline"]
             "{:#}",
             workspace_with(home.path(), &broken, HostConfig::default()).unwrap_err()
         );
-        assert!(error.contains("dfapp.toml"), "{error}");
+        assert!(error.contains("dfutil.toml"), "{error}");
         assert!(error.contains("pinn"), "{error}");
     }
 

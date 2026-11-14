@@ -179,7 +179,7 @@ pub fn workspace_vars(workspace: &Workspace) -> Result<Vars> {
             // Covers `[vars]` defaults; host values are checked below with
             // their own file name.
             if value.contains('\n') && !workspace.host.vars.contains_key(name) {
-                bail!("dfapp.toml: vars.{name}: the default can't contain newlines");
+                bail!("dfutil.toml: vars.{name}: the default can't contain newlines");
             }
             vars.insert(name.clone(), value.to_string());
         }
@@ -187,7 +187,7 @@ pub fn workspace_vars(workspace: &Workspace) -> Result<Vars> {
     for (name, value) in &workspace.host.vars {
         if !workspace.config.vars.contains_key(name) {
             bail!(
-                "{}: vars.{name}: not declared in [vars] of dfapp.toml",
+                "{}: vars.{name}: not declared in [vars] of dfutil.toml",
                 workspace.host_path.display()
             );
         }

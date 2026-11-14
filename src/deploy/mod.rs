@@ -3,7 +3,7 @@
 //! Each selected package is a directory in a source repo whose layout mirrors
 //! `$HOME`. Secondary sources layer over the main repo: when two roots have
 //! the same file in the same package, the later root wins. A `.tmpl` file is
-//! rendered into dfapp's rendered directory and the link points there.
+//! rendered into dfutil's rendered directory and the link points there.
 
 pub mod capture;
 pub mod template;
@@ -48,7 +48,7 @@ pub enum Change {
     Rerendered,
     /// A foreign file was moved aside to `<target>.bak.<timestamp>`.
     BackedUp,
-    /// A link dfapp made earlier was removed.
+    /// A link dfutil made earlier was removed.
     Pruned,
     Skipped,
     Error,
@@ -227,7 +227,7 @@ pub fn deploy(
             detail: if still_ours {
                 "no longer deployed".into()
             } else {
-                "no longer deployed; the file there now isn't dfapp's, left alone".into()
+                "no longer deployed; the file there now isn't dfutil's, left alone".into()
             },
         });
     }
@@ -288,7 +288,7 @@ fn deploy_one(
         {
             return Ok(item(
                 Change::Skipped,
-                "edited in place since the last deploy; run `dfapp capture` to keep the edits, or deploy with --force to discard them",
+                "edited in place since the last deploy; run `dfutil capture` to keep the edits, or deploy with --force to discard them",
             ));
         }
         if on_disk.as_deref() != Some(sha256.as_str()) {

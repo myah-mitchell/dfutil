@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::Sender;
 
 /// Name of worker threads, so the panic hook can tell them apart.
-pub const JOB_THREAD: &str = "dfapp-job";
+pub const JOB_THREAD: &str = "dfutil-job";
 
 /// What a worker needs to load its own session.
 #[derive(Clone, Debug)]

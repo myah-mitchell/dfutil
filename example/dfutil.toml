@@ -1,5 +1,5 @@
-# Example content repo for dfapp. Copy this directory into a git repo of
-# your own and point `dfapp init --repo` at it.
+# Example content repo for dfutil. Copy this directory into a git repo of
+# your own and point `dfutil init --repo` at it.
 
 [settings]
 palette = "mocha"
@@ -72,7 +72,7 @@ description = "Node.js LTS from nodejs.org, needed by npm tools"
 # nodejs/node GitHub releases carry no binaries, so a script fetches them.
 kind = "script"
 install = "sh scripts/install-node.sh"
-version = "\"$DFAPP_TOOL_DIR/bin/node\" --version"
+version = "\"$DFUTIL_TOOL_DIR/bin/node\" --version"
 bins = ["node=bin/node", "npm=bin/npm", "npx=bin/npx"]
 
 [tools.claude]

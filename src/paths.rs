@@ -1,4 +1,4 @@
-//! Filesystem locations dfapp reads and writes, for user and system scope.
+//! Filesystem locations dfutil reads and writes, for user and system scope.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -97,17 +97,17 @@ impl Paths {
         cache: PathBuf,
         config: PathBuf,
     ) -> Self {
-        let state_dir = state.join("dfapp");
+        let state_dir = state.join("dfutil");
         let (prefix, tools_dir, tool_state) = match scope {
             Scope::User => (
                 home.join(".local"),
-                data.join("dfapp/tools"),
+                data.join("dfutil/tools"),
                 state_dir.join("tools.json"),
             ),
             Scope::System => (
                 PathBuf::from("/usr/local"),
-                PathBuf::from("/usr/local/lib/dfapp/tools"),
-                PathBuf::from("/var/lib/dfapp/tools.json"),
+                PathBuf::from("/usr/local/lib/dfutil/tools"),
+                PathBuf::from("/var/lib/dfutil/tools.json"),
             ),
         };
         Self {
@@ -116,11 +116,11 @@ impl Paths {
             tools_dir,
             tool_state,
             deploy_state: state_dir.join("deploy.json"),
-            rendered_dir: data.join("dfapp/rendered"),
-            init_dir: data.join("dfapp/init"),
-            cache_dir: cache.join("dfapp"),
-            config_dir: config.join("dfapp"),
-            sources_dir: data.join("dfapp/sources"),
+            rendered_dir: data.join("dfutil/rendered"),
+            init_dir: data.join("dfutil/init"),
+            cache_dir: cache.join("dfutil"),
+            config_dir: config.join("dfutil"),
+            sources_dir: data.join("dfutil/sources"),
             state_dir,
             home,
             scope,
@@ -142,12 +142,12 @@ impl Paths {
                 .find(|ancestor| ancestor.exists())
                 .unwrap_or(Path::new("/"));
             let probe = tempfile::Builder::new()
-                .prefix(".dfapp-write-check")
+                .prefix(".dfutil-write-check")
                 .tempfile_in(existing);
             if probe.is_err() {
                 anyhow::bail!(
                     "{} isn't writable by this user; {} scope needs write access there \
-                     (run dfapp as a user that has it, or use user scope)",
+                     (run dfutil as a user that has it, or use user scope)",
                     existing.display(),
                     self.scope
                 );
@@ -186,7 +186,7 @@ mod tests {
     fn system_scope_moves_only_tool_locations() {
         let paths = Paths::for_home(Path::new("/home/u"), Scope::System);
         assert_eq!(paths.bin_dir, Path::new("/usr/local/bin"));
-        assert_eq!(paths.tool_state, Path::new("/var/lib/dfapp/tools.json"));
+        assert_eq!(paths.tool_state, Path::new("/var/lib/dfutil/tools.json"));
         assert!(paths.deploy_state.starts_with("/home/u"));
         assert!(paths.rendered_dir.starts_with("/home/u"));
     }

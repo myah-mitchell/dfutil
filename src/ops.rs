@@ -219,7 +219,7 @@ impl Session {
     pub fn install(&mut self, names: &[String], log: Log) -> Result<ApplyReport> {
         for name in names {
             if !self.workspace.config.tools.contains_key(name) {
-                bail!("unknown tool `{name}`; add it with `dfapp tool add` first");
+                bail!("unknown tool `{name}`; add it with `dfutil tool add` first");
             }
         }
         for name in names {
@@ -442,7 +442,7 @@ mod tests {
     const REPO: &str = r#"
 [tools.hello]
 kind = "script"
-install = "mkdir -p \"$DFAPP_TOOL_DIR\" && printf '#!/bin/sh\necho hi\n' > \"$DFAPP_TOOL_DIR/hello\" && chmod +x \"$DFAPP_TOOL_DIR/hello\""
+install = "mkdir -p \"$DFUTIL_TOOL_DIR\" && printf '#!/bin/sh\necho hi\n' > \"$DFUTIL_TOOL_DIR/hello\" && chmod +x \"$DFUTIL_TOOL_DIR/hello\""
 version = "echo 1.0.0"
 bins = ["hello=hello"]
 
@@ -465,8 +465,8 @@ tools = ["hello"]
         let home = tempfile::tempdir().unwrap();
         let repo = home.path().join("dotfiles");
         std::fs::create_dir_all(&repo).unwrap();
-        std::fs::write(repo.join("dfapp.toml"), REPO).unwrap();
-        let host = home.path().join(".config/dfapp/host.toml");
+        std::fs::write(repo.join("dfutil.toml"), REPO).unwrap();
+        let host = home.path().join(".config/dfutil/host.toml");
         let quiet = |_: String| {};
         init(
             &host,

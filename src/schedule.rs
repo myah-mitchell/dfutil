@@ -1,4 +1,4 @@
-//! Scheduled `dfapp update` runs through a systemd user timer, with a cron
+//! Scheduled `dfutil update` runs through a systemd user timer, with a cron
 //! line printed as the fallback where there's no systemd user session.
 
 use anyhow::{Context, Result, bail};
@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const UNIT: &str = "dfapp-update";
+const UNIT: &str = "dfutil-update";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -51,12 +51,12 @@ pub fn units(exe: &Path, host_config: &Path, frequency: Frequency) -> (String, S
         )
     };
     let service = format!(
-        "[Unit]\nDescription=Update tools and dotfiles with dfapp\n\n[Service]\nType=oneshot\nExecStart={} --host-config {} update --yes\n",
+        "[Unit]\nDescription=Update tools and dotfiles with dfutil\n\n[Service]\nType=oneshot\nExecStart={} --host-config {} update --yes\n",
         quote(exe),
         quote(host_config)
     );
     let timer = format!(
-        "[Unit]\nDescription=Scheduled dfapp update\n\n[Timer]\nOnCalendar={}\nPersistent=true\nRandomizedDelaySec=1h\n\n[Install]\nWantedBy=timers.target\n",
+        "[Unit]\nDescription=Scheduled dfutil update\n\n[Timer]\nOnCalendar={}\nPersistent=true\nRandomizedDelaySec=1h\n\n[Install]\nWantedBy=timers.target\n",
         frequency.calendar()
     );
     (service, timer)
@@ -122,7 +122,7 @@ pub fn disable(home: &Path) -> Result<()> {
     let timer = directory.join(format!("{UNIT}.timer"));
     if !timer.exists() {
         bail!(
-            "no dfapp timer is installed; a cron line, if you added one, has to be removed by hand"
+            "no dfutil timer is installed; a cron line, if you added one, has to be removed by hand"
         );
     }
     if has_user_systemd() {
@@ -180,12 +180,12 @@ mod tests {
     #[test]
     fn units_quote_paths_and_set_schedule() {
         let (service, timer) = units(
-            Path::new("/home/a b/.local/bin/dfapp"),
+            Path::new("/home/a b/.local/bin/dfutil"),
             Path::new("/h/host.toml"),
             Frequency::Weekly,
         );
         assert!(service.contains(
-            "ExecStart=\"/home/a b/.local/bin/dfapp\" --host-config \"/h/host.toml\" update --yes"
+            "ExecStart=\"/home/a b/.local/bin/dfutil\" --host-config \"/h/host.toml\" update --yes"
         ));
         assert!(timer.contains("OnCalendar=weekly"));
         assert!(timer.contains("Persistent=true"));

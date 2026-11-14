@@ -161,7 +161,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     if area.width < 30 || area.height < 8 {
         frame.render_widget(
-            Paragraph::new("dfapp needs a terminal of at least 30x8"),
+            Paragraph::new("dfutil needs a terminal of at least 30x8"),
             area,
         );
         return;
@@ -262,7 +262,7 @@ impl<'a> Row<'a> {
 fn draw_top(frame: &mut Frame, area: Rect, app: &App) {
     let workspace = &app.session.workspace;
     let mut row = Row::new(app, area);
-    row.push(vec![pill("dfapp", ACCENT), Span::raw(" ")], None);
+    row.push(vec![pill("dfutil", ACCENT), Span::raw(" ")], None);
     let presets = &workspace.host.presets;
     row.push(
         vec![
@@ -1512,7 +1512,7 @@ fn schedule_detail(app: &App, width: usize) -> Detail {
     match &app.repos.schedule {
         None => detail.prose("reading...", width, dim()),
         Some(status) if !status.installed => detail.prose(
-            "No scheduled update. `dfapp schedule` sets one up.",
+            "No scheduled update. `dfutil schedule` sets one up.",
             width,
             Style::default(),
         ),

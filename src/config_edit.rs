@@ -1,4 +1,4 @@
-//! Edits to `dfapp.toml` and `host.toml` that keep the user's comments and
+//! Edits to `dfutil.toml` and `host.toml` that keep the user's comments and
 //! formatting, through `toml_edit`.
 
 use crate::config::{HostConfig, PresetDef, ToolDef, is_valid_name};
@@ -73,7 +73,7 @@ pub fn create_host(path: &Path, host: &HostConfig) -> Result<()> {
         );
     }
     let mut text =
-        String::from("# This host's dfapp choices. See docs/config.md in the dfapp repo.\n");
+        String::from("# This host's dfutil choices. See docs/config.md in the dfutil repo.\n");
     text.push_str(&toml::to_string(host)?);
     crate::util::write_atomic(path, text.as_bytes())?;
     // May hold secret variable values.
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn edits_keep_comments_and_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("dfapp.toml");
+        let path = dir.path().join("dfutil.toml");
         std::fs::write(
             &path,
             "# my tools\n[tools.rg]\nrepo = \"BurntSushi/ripgrep\" # fast grep\n",

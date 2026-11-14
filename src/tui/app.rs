@@ -39,7 +39,7 @@ pub const F_DESCRIPTION: usize = 8;
 pub const F_INSTALL_NOW: usize = 9;
 
 /// Kinds offered by the add-tool form. `script` tools need install commands
-/// the form has no room for, so they stay a hand edit of `dfapp.toml`.
+/// the form has no room for, so they stay a hand edit of `dfutil.toml`.
 const KIND_CHOICES: [&str; 5] = ["auto", "github", "cargo", "npm", "uv"];
 
 /// What the event loop must do after a key or an event.

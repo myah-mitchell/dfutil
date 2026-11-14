@@ -241,7 +241,7 @@ pub fn sync_repo(repo: &Path, name: &str, mode: PullMode) -> SyncReport {
                     "--include-untracked",
                     "--quiet",
                     "-m",
-                    "dfapp sync",
+                    "dfutil sync",
                 ],
             )?;
             stashed = true;
@@ -282,7 +282,7 @@ pub fn sync_repo(repo: &Path, name: &str, mode: PullMode) -> SyncReport {
     }
 }
 
-/// Puts a repo back to `old_head` with the dfapp stash reapplied.
+/// Puts a repo back to `old_head` with the dfutil stash reapplied.
 fn restore(repo: &Path, old_head: &str, stashed: bool) -> Result<()> {
     if succeeds(repo, &["rev-parse", "--verify", "--quiet", "REBASE_HEAD"])
         || repo_path(repo, "rebase-merge")?.exists()
@@ -332,10 +332,10 @@ pub fn sync_all(workspace: &Workspace) -> Vec<SyncReport> {
         .collect()
 }
 
-const HOOK_MARKER: &str = "# dfapp pre-commit hook";
+const HOOK_MARKER: &str = "# dfutil pre-commit hook";
 
 /// Installs a pre-commit hook in each present repo that blocks commits
-/// containing a secret variable's value. Refuses to replace a hook dfapp
+/// containing a secret variable's value. Refuses to replace a hook dfutil
 /// didn't write.
 pub fn install_hooks(workspace: &Workspace, exe: &Path) -> Result<Vec<PathBuf>> {
     let mut installed = Vec::new();
@@ -351,7 +351,7 @@ pub fn install_hooks(workspace: &Workspace, exe: &Path) -> Result<Vec<PathBuf>> 
             && !existing.contains(HOOK_MARKER)
         {
             bail!(
-                "{} already exists and wasn't written by dfapp; add `dfapp hook pre-commit` to it by hand",
+                "{} already exists and wasn't written by dfutil; add `dfutil hook pre-commit` to it by hand",
                 hook.display()
             );
         }

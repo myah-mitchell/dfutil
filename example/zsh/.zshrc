@@ -1,2 +1,2 @@
 export EDITOR=nvim
-[ -f ~/.local/share/dfapp/init/init.zsh ] && source ~/.local/share/dfapp/init/init.zsh
+[ -f ~/.local/share/dfutil/init/init.zsh ] && source ~/.local/share/dfutil/init/init.zsh

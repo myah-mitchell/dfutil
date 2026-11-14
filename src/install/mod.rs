@@ -4,7 +4,7 @@
 //! directory beside the final one and renames it into place, so a failed
 //! install never leaves a half-written version behind. Versions live in
 //! `<tools_dir>/<tool>/<version>/` and binaries are symlinked into the bin
-//! directory; the previous version is kept for `dfapp rollback`.
+//! directory; the previous version is kept for `dfutil rollback`.
 
 pub mod archive;
 pub mod init;
@@ -478,7 +478,7 @@ fn create_links(
     Ok(links)
 }
 
-/// Points `link_path` at `target`, replacing only a link dfapp owns (one
+/// Points `link_path` at `target`, replacing only a link dfutil owns (one
 /// pointing into `tool_dir`). Anything else in the way is an error, so a
 /// system binary or a user's own file is never overwritten.
 pub fn place_link(link_path: &Path, target: &Path, tool_dir: &Path) -> Result<()> {
@@ -492,12 +492,12 @@ pub fn place_link(link_path: &Path, target: &Path, tool_dir: &Path) -> Result<()
             std::fs::remove_file(link_path)?;
         }
         Ok(existing) => bail!(
-            "{} already exists and points at {}, which dfapp doesn't manage; remove it to let dfapp install here",
+            "{} already exists and points at {}, which dfutil doesn't manage; remove it to let dfutil install here",
             link_path.display(),
             existing.display()
         ),
         Err(_) if link_path.exists() => bail!(
-            "{} already exists and isn't managed by dfapp; remove it to let dfapp install here",
+            "{} already exists and isn't managed by dfutil; remove it to let dfutil install here",
             link_path.display()
         ),
         Err(_) => {}
@@ -694,7 +694,7 @@ fn install_script(
             .clone()
             .unwrap_or_else(|| "installed".into()),
     };
-    // Script tools may name files they placed under DFAPP_TOOL_DIR to link.
+    // Script tools may name files they placed under DFUTIL_TOOL_DIR to link.
     let mut links = Vec::new();
     for (link_name, path) in tool.bin_specs(name) {
         if let Some(path) = path {
@@ -722,8 +722,8 @@ pub fn path_with_bin(paths: &Paths) -> std::ffi::OsString {
 }
 
 /// A `sh -c <command>` with the bin directory on `PATH` and `HOME` set to the
-/// home dfapp deploys into. They differ from the caller's only under
-/// `DFAPP_HOME` or `--home`, where a script writing under `$HOME` must land in
+/// home dfutil deploys into. They differ from the caller's only under
+/// `DFUTIL_HOME` or `--home`, where a script writing under `$HOME` must land in
 /// that home, not the real one.
 pub fn shell(paths: &Paths, command: &str) -> Command {
     let mut process = Command::new("sh");
@@ -736,7 +736,7 @@ pub fn shell(paths: &Paths, command: &str) -> Command {
 }
 
 /// Runs a script-tool or post-install command with `sh -c` in the repo root,
-/// passing the install context as `DFAPP_*` variables. Returns stdout.
+/// passing the install context as `DFUTIL_*` variables. Returns stdout.
 fn run_shell(
     context: &InstallContext,
     name: &str,
@@ -747,19 +747,19 @@ fn run_shell(
     let mut process = shell(context.paths, command);
     process
         .current_dir(context.repo_root)
-        .env("DFAPP_TOOL", name)
+        .env("DFUTIL_TOOL", name)
         .env(
-            "DFAPP_VERSION",
+            "DFUTIL_VERSION",
             resolved.version.clone().unwrap_or_default(),
         )
-        .env("DFAPP_PREFIX", &context.paths.prefix)
-        .env("DFAPP_BIN_DIR", &context.paths.bin_dir)
-        .env("DFAPP_TOOL_DIR", tool_dir)
-        .env("DFAPP_REPO", context.repo_root)
-        .env("DFAPP_SCOPE", context.paths.scope.to_string())
-        .env("DFAPP_OS", &context.platform.os)
-        .env("DFAPP_ARCH", &context.platform.arch)
-        .env("DFAPP_WSL", if context.platform.wsl { "1" } else { "0" });
+        .env("DFUTIL_PREFIX", &context.paths.prefix)
+        .env("DFUTIL_BIN_DIR", &context.paths.bin_dir)
+        .env("DFUTIL_TOOL_DIR", tool_dir)
+        .env("DFUTIL_REPO", context.repo_root)
+        .env("DFUTIL_SCOPE", context.paths.scope.to_string())
+        .env("DFUTIL_OS", &context.platform.os)
+        .env("DFUTIL_ARCH", &context.platform.arch)
+        .env("DFUTIL_WSL", if context.platform.wsl { "1" } else { "0" });
     crate::util::run_stdout(&mut process)
 }
 
@@ -782,10 +782,10 @@ pub fn uninstall(
         let mut process = shell(paths, command);
         process
             .current_dir(repo_root)
-            .env("DFAPP_TOOL", name)
-            .env("DFAPP_PREFIX", &paths.prefix)
-            .env("DFAPP_BIN_DIR", &paths.bin_dir)
-            .env("DFAPP_TOOL_DIR", &tool_dir);
+            .env("DFUTIL_TOOL", name)
+            .env("DFUTIL_PREFIX", &paths.prefix)
+            .env("DFUTIL_BIN_DIR", &paths.bin_dir)
+            .env("DFUTIL_TOOL_DIR", &tool_dir);
         crate::util::run_checked(&mut process)
             .with_context(|| format!("{name}: uninstall command failed"))?;
     }
@@ -807,7 +807,9 @@ pub fn rollback(paths: &Paths, name: &str, record: &ToolRecord) -> Result<ToolRe
     let (Some(previous_dir), Some(current_dir)) =
         (&previous.install_dir, &record.current.install_dir)
     else {
-        bail!("{name} wasn't installed into a dfapp-managed directory, so it can't be rolled back");
+        bail!(
+            "{name} wasn't installed into a dfutil-managed directory, so it can't be rolled back"
+        );
     };
     if !previous_dir.exists() {
         bail!(
