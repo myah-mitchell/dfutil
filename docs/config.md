@@ -81,6 +81,7 @@ Each `[tools.<name>]` table defines one tool. Names use letters, digits, `.`, `_
 ```toml
 [tools.ripgrep]
 description = "Fast recursive grep"
+category = "search"
 repo = "BurntSushi/ripgrep"
 crate = "ripgrep"
 pin = "15"
@@ -91,6 +92,8 @@ assets.linux-aarch64 = "ripgrep-*-aarch64-unknown-linux-gnu.tar.gz"
 
 | Key | Meaning |
 | --- | --- |
+| `description` | One line shown in the terminal UI's detail pane |
+| `category` | A free-form group name, such as `search` or `git`. The terminal UI can group tools by it; tools without one are grouped as *Uncategorized* |
 | `kind` | `github`, `cargo`, `npm`, `uv`, or `script`. Defaults to `github` when `repo` is set |
 | `repo` | GitHub `owner/name`, for release downloads and version lookups |
 | `crate` | crates.io crate. With `build = "source"`, the tool is built with `cargo install --locked` |

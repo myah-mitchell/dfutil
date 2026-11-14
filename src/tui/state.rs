@@ -1,54 +1,50 @@
-//! Per-tab state: cursors, scroll offsets, and the data jobs delivered.
+//! Per-panel state: cursors, scroll offsets, grouping, and the data jobs
+//! delivered. Everything here is plain data with no terminal attached.
 
 use super::input::Input;
-use crate::deploy::{Edited, Item};
+use crate::config::PresetDef;
+use crate::deploy::{Change, Edited, Item};
 use crate::gitops::{Incoming, Outgoing};
-use crate::plan::{Plan, ToolRow};
+use crate::plan::{Action, Plan, ToolRow};
 use crate::schedule;
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+/// The four stacked panels on the left. The detail pane on the right always
+/// describes the focused panel's selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tab {
+pub enum Panel {
     Tools,
     Presets,
     Dotfiles,
-    Sync,
-    Settings,
+    Repos,
 }
 
-impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::Tools,
-        Tab::Presets,
-        Tab::Dotfiles,
-        Tab::Sync,
-        Tab::Settings,
-    ];
+impl Panel {
+    pub const ALL: [Panel; 4] = [Panel::Tools, Panel::Presets, Panel::Dotfiles, Panel::Repos];
 
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Tools => "Tools",
-            Tab::Presets => "Presets",
-            Tab::Dotfiles => "Dotfiles",
-            Tab::Sync => "Sync",
-            Tab::Settings => "Settings",
+            Panel::Tools => "Tools",
+            Panel::Presets => "Presets",
+            Panel::Dotfiles => "Dotfiles",
+            Panel::Repos => "Repos",
         }
     }
 
     pub fn index(self) -> usize {
-        Tab::ALL
+        Panel::ALL
             .iter()
-            .position(|tab| *tab == self)
-            .expect("every tab is listed")
+            .position(|panel| *panel == self)
+            .expect("every panel is listed")
     }
 
-    pub fn next(self) -> Tab {
-        Tab::ALL[(self.index() + 1) % Tab::ALL.len()]
+    pub fn next(self) -> Panel {
+        Panel::ALL[(self.index() + 1) % Panel::ALL.len()]
     }
 
-    pub fn prev(self) -> Tab {
-        Tab::ALL[(self.index() + Tab::ALL.len() - 1) % Tab::ALL.len()]
+    pub fn prev(self) -> Panel {
+        Panel::ALL[(self.index() + Panel::ALL.len() - 1) % Panel::ALL.len()]
     }
 }
 
@@ -95,7 +91,123 @@ impl Scroller {
     }
 }
 
-#[derive(Debug, Default)]
+// ----- tools ----------------------------------------------------------------
+
+/// How a tool reads at a glance: one glyph and one color in the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Status {
+    Failed,
+    Install,
+    Upgrade,
+    Reinstall,
+    Remove,
+    Held,
+    Current,
+    Off,
+}
+
+impl Status {
+    pub fn of(row: &ToolRow) -> Status {
+        match row.action {
+            Action::Error => Status::Failed,
+            Action::Install => Status::Install,
+            Action::Upgrade => Status::Upgrade,
+            Action::Reinstall => Status::Reinstall,
+            Action::Uninstall => Status::Remove,
+            Action::Keep if row.held => Status::Held,
+            Action::Keep => Status::Current,
+            Action::Available => Status::Off,
+        }
+    }
+
+    /// Whether the row wants a decision or an apply.
+    pub fn needs_attention(self) -> bool {
+        matches!(
+            self,
+            Status::Failed | Status::Install | Status::Upgrade | Status::Reinstall | Status::Remove
+        )
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Status::Failed => "✗",
+            Status::Install => "+",
+            Status::Upgrade => "↑",
+            Status::Reinstall => "↻",
+            Status::Remove => "−",
+            Status::Held => "‖",
+            Status::Current => "●",
+            Status::Off => "○",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Failed => "lookup failed",
+            Status::Install => "will install",
+            Status::Upgrade => "update available",
+            Status::Reinstall => "will reinstall",
+            Status::Remove => "will be removed",
+            Status::Held => "held after a rollback",
+            Status::Current => "up to date",
+            Status::Off => "not selected",
+        }
+    }
+}
+
+/// What the tools list is grouped by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grouping {
+    Status,
+    Preset,
+    Category,
+}
+
+impl Grouping {
+    pub const ALL: [Grouping; 3] = [Grouping::Status, Grouping::Preset, Grouping::Category];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Grouping::Status => "status",
+            Grouping::Preset => "preset",
+            Grouping::Category => "category",
+        }
+    }
+
+    pub fn next(self) -> Grouping {
+        match self {
+            Grouping::Status => Grouping::Preset,
+            Grouping::Preset => Grouping::Category,
+            Grouping::Category => Grouping::Status,
+        }
+    }
+}
+
+/// One line of the tools list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolItem {
+    Header {
+        /// Grouping-qualified key, such as `status:current`, for open state.
+        key: String,
+        label: String,
+        count: usize,
+        attention: usize,
+        /// For preset groups: whether the preset is active on this host.
+        active: Option<bool>,
+        open: bool,
+    },
+    /// Index into the plan's rows.
+    Tool(usize),
+}
+
+/// What the cursor sits on, so it can follow its item when the list changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToolAnchor {
+    Header(String),
+    Tool(String),
+}
+
+#[derive(Debug)]
 pub struct ToolsState {
     pub plan: Option<Plan>,
     /// Why the last lookup failed, if it did.
@@ -103,207 +215,254 @@ pub struct ToolsState {
     pub marked: BTreeSet<String>,
     pub filter: Input,
     pub filtering: bool,
+    pub grouping: Grouping,
+    /// Groups opened or closed by hand; the rest use their default.
+    pub open: BTreeMap<String, bool>,
     pub list: Scroller,
+}
+
+impl Default for ToolsState {
+    fn default() -> Self {
+        Self {
+            plan: None,
+            error: None,
+            marked: BTreeSet::new(),
+            filter: Input::default(),
+            filtering: false,
+            grouping: Grouping::Status,
+            open: BTreeMap::new(),
+            list: Scroller::default(),
+        }
+    }
 }
 
 impl ToolsState {
-    /// Rows matching the filter, in name order.
-    pub fn visible(&self) -> Vec<&ToolRow> {
+    pub fn rows(&self) -> &[ToolRow] {
+        self.plan.as_ref().map_or(&[], |plan| plan.rows.as_slice())
+    }
+
+    pub fn row(&self, name: &str) -> Option<&ToolRow> {
+        self.rows().iter().find(|row| row.name == name)
+    }
+
+    /// The grouped, filtered list. `presets` are the config's presets and
+    /// `active` the ones in effect on this host (extends included).
+    pub fn items(
+        &self,
+        presets: &BTreeMap<String, PresetDef>,
+        active: &BTreeSet<String>,
+    ) -> Vec<ToolItem> {
+        let rows = self.rows();
         let needle = self.filter.text().to_lowercase();
-        self.plan
-            .iter()
-            .flat_map(|plan| plan.rows.iter())
-            .filter(|row| needle.is_empty() || row.name.to_lowercase().contains(&needle))
-            .collect()
-    }
+        let shown: Vec<usize> = (0..rows.len())
+            .filter(|index| needle.is_empty() || rows[*index].name.to_lowercase().contains(&needle))
+            .collect();
+        let status = |index: &usize| Status::of(&rows[*index]);
 
-    pub fn current(&self) -> Option<&ToolRow> {
-        self.visible().get(self.list.cursor).copied()
-    }
-
-    /// Replaces the plan, keeping the cursor on the same tool and dropping
-    /// marks for tools that no longer exist.
-    pub fn set_plan(&mut self, plan: Plan) {
-        let name = self.current().map(|row| row.name.clone());
-        self.marked
-            .retain(|marked| plan.rows.iter().any(|row| &row.name == marked));
-        self.plan = Some(plan);
-        self.error = None;
-        let visible = self.visible();
-        let len = visible.len();
-        let index = name.and_then(|name| visible.iter().position(|row| row.name == name));
-        if let Some(index) = index {
-            self.list.cursor = index;
-        }
-        self.list.clamp(len);
-    }
-
-    /// Marked tool names, or the highlighted one when nothing is marked.
-    pub fn targets(&self) -> Vec<String> {
-        if self.marked.is_empty() {
-            self.current()
-                .map(|row| vec![row.name.clone()])
-                .unwrap_or_default()
-        } else {
-            self.marked.iter().cloned().collect()
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DotPane {
-    Targets,
-    Palettes,
-    Vars,
-}
-
-impl DotPane {
-    pub fn right(self) -> DotPane {
-        match self {
-            DotPane::Targets => DotPane::Palettes,
-            _ => DotPane::Vars,
-        }
-    }
-
-    pub fn left(self) -> DotPane {
-        match self {
-            DotPane::Vars => DotPane::Palettes,
-            _ => DotPane::Targets,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DotfilesState {
-    /// None until the first dry run lands.
-    pub items: Option<Vec<Item>>,
-    pub edited: Vec<Edited>,
-    pub problems: Vec<String>,
-    pub focus: DotPane,
-    pub changes_only: bool,
-    pub targets: Scroller,
-    pub palettes: Scroller,
-    pub vars: Scroller,
-}
-
-impl Default for DotfilesState {
-    fn default() -> Self {
-        Self {
-            items: None,
-            edited: Vec::new(),
-            problems: Vec::new(),
-            focus: DotPane::Targets,
-            changes_only: false,
-            targets: Scroller::default(),
-            palettes: Scroller::default(),
-            vars: Scroller::default(),
-        }
-    }
-}
-
-impl DotfilesState {
-    pub fn visible_items(&self) -> Vec<&Item> {
-        self.items
-            .iter()
-            .flatten()
-            .filter(|item| !self.changes_only || item.change != crate::deploy::Change::Unchanged)
-            .collect()
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct SyncState {
-    /// None until the first check lands.
-    pub data: Option<(Vec<Incoming>, Vec<Outgoing>)>,
-    pub list: Scroller,
-    pub diff_scroll: usize,
-    /// Set once the first check was queued, so visiting the tab fetches once.
-    pub requested: bool,
-}
-
-/// One row of the sync list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncEntry {
-    Incoming(usize),
-    Outgoing(usize),
-}
-
-impl SyncState {
-    pub fn entries(&self) -> Vec<SyncEntry> {
-        let Some((incoming, outgoing)) = &self.data else {
-            return Vec::new();
-        };
-        let mut entries = Vec::new();
-        for index in 0..incoming.len() {
-            entries.push(SyncEntry::Incoming(index));
-        }
-        for index in 0..outgoing.len() {
-            entries.push(SyncEntry::Outgoing(index));
-        }
-        entries
-    }
-
-    pub fn current(&self) -> Option<SyncEntry> {
-        self.entries().get(self.list.cursor).copied()
-    }
-
-    /// The viewer's content for the highlighted entry: header lines (title,
-    /// problem, commits, status) and the raw diff text.
-    pub fn view(&self) -> Option<(Vec<String>, &str)> {
-        let (incoming, outgoing) = self.data.as_ref()?;
-        match self.current()? {
-            SyncEntry::Incoming(index) => {
-                let repo = &incoming[index];
-                let mut header = vec![format!(
-                    "{}: incoming from {}",
-                    repo.root,
-                    repo.upstream.as_deref().unwrap_or("(no upstream)")
-                )];
-                if let Some(problem) = &repo.problem {
-                    header.push(format!("problem: {problem}"));
-                } else if repo.commits.is_empty() {
-                    header.push("up to date".into());
-                }
-                header.extend(repo.commits.iter().map(|commit| format!("  {commit}")));
-                Some((header, &repo.diff))
-            }
-            SyncEntry::Outgoing(index) => {
-                let repo = &outgoing[index];
-                let mut header = vec![format!("{}: local changes", repo.root)];
-                if let Some(problem) = &repo.problem {
-                    header.push(format!("problem: {problem}"));
-                } else if repo.status.is_empty() && repo.commits.is_empty() {
-                    header.push("nothing to push".into());
-                }
-                header.extend(repo.status.iter().map(|line| format!("  {line}")));
-                header.extend(
-                    repo.commits
+        // (key, label, active, members)
+        let mut groups: Vec<(String, String, Option<bool>, Vec<usize>)> = Vec::new();
+        match self.grouping {
+            Grouping::Status => {
+                type Bucket = (&'static str, &'static str, fn(Status) -> bool);
+                let buckets: [Bucket; 4] = [
+                    ("attention", "Needs attention", Status::needs_attention),
+                    ("held", "Held back", |status| status == Status::Held),
+                    ("current", "Up to date", |status| status == Status::Current),
+                    ("off", "Not selected", |status| status == Status::Off),
+                ];
+                for (key, label, test) in buckets {
+                    let mut members: Vec<usize> = shown
                         .iter()
-                        .map(|commit| format!("  unpushed: {commit}")),
-                );
-                Some((header, &repo.diff))
+                        .copied()
+                        .filter(|index| test(status(index)))
+                        .collect();
+                    // Failures first, then by name.
+                    members.sort_by_key(|index| (status(index), rows[*index].name.clone()));
+                    groups.push((key.into(), label.into(), None, members));
+                }
             }
+            Grouping::Preset => {
+                let mut placed = BTreeSet::new();
+                for (name, preset) in presets {
+                    let members: Vec<usize> = shown
+                        .iter()
+                        .copied()
+                        .filter(|index| preset.tools.contains(&rows[*index].name))
+                        .collect();
+                    placed.extend(members.iter().copied());
+                    groups.push((
+                        name.clone(),
+                        name.clone(),
+                        Some(active.contains(name)),
+                        members,
+                    ));
+                }
+                let rest = shown
+                    .iter()
+                    .copied()
+                    .filter(|index| !placed.contains(index))
+                    .collect();
+                groups.push(("-".into(), "In no preset".into(), None, rest));
+            }
+            Grouping::Category => {
+                let mut by: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+                let mut rest = Vec::new();
+                for index in &shown {
+                    match &rows[*index].category {
+                        Some(category) => by.entry(category.clone()).or_default().push(*index),
+                        None => rest.push(*index),
+                    }
+                }
+                for (category, members) in by {
+                    groups.push((category.clone(), category, None, members));
+                }
+                groups.push(("-".into(), "Uncategorized".into(), None, rest));
+            }
+        }
+        groups.retain(|(_, _, _, members)| !members.is_empty());
+
+        let any_flagged = shown.iter().any(|index| {
+            let status = status(index);
+            status.needs_attention() || status == Status::Held
+        });
+        let mut items = Vec::new();
+        for (key, label, active, members) in groups {
+            let key = format!("{}:{key}", self.grouping.label());
+            let attention = members
+                .iter()
+                .filter(|index| status(index).needs_attention())
+                .count();
+            let flagged =
+                attention > 0 || members.iter().any(|index| status(index) == Status::Held);
+            // Open what wants a look; with nothing flagged, open the
+            // up-to-date group so the list isn't all headers.
+            let default = flagged || (!any_flagged && key == "status:current");
+            let open = !needle.is_empty() || self.open.get(&key).copied().unwrap_or(default);
+            items.push(ToolItem::Header {
+                key,
+                label,
+                count: members.len(),
+                attention,
+                active,
+                open,
+            });
+            if open {
+                items.extend(members.into_iter().map(ToolItem::Tool));
+            }
+        }
+        items
+    }
+
+    pub fn anchor(item: &ToolItem, rows: &[ToolRow]) -> ToolAnchor {
+        match item {
+            ToolItem::Header { key, .. } => ToolAnchor::Header(key.clone()),
+            ToolItem::Tool(index) => ToolAnchor::Tool(rows[*index].name.clone()),
         }
     }
 
-    /// Number of lines in the viewer for the highlighted entry.
-    pub fn diff_len(&self) -> usize {
-        self.view()
-            .map_or(0, |(header, diff)| header.len() + 1 + diff.lines().count())
+    /// Where `anchor` is in `items`, if it's still there.
+    pub fn find(items: &[ToolItem], rows: &[ToolRow], anchor: &ToolAnchor) -> Option<usize> {
+        items
+            .iter()
+            .position(|item| &ToolsState::anchor(item, rows) == anchor)
     }
 }
 
-#[derive(Debug, Default)]
-pub struct SettingsState {
-    pub schedule: Option<schedule::Status>,
-    pub scroll: usize,
-    pub requested: bool,
-}
+// ----- presets --------------------------------------------------------------
 
 #[derive(Debug, Default)]
 pub struct PresetsState {
     pub list: Scroller,
 }
+
+// ----- dotfiles -------------------------------------------------------------
+
+/// One line of the dotfiles panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DotRow {
+    /// A problem from the last preview.
+    Problem(usize),
+    /// A rendered file edited in place (index into `edited`).
+    Edited(usize),
+    /// A target a deploy would change (index into `items`).
+    Change(usize),
+    /// Every target a deploy would leave alone, as one line.
+    Current(usize),
+    Palette,
+    Var(String),
+}
+
+#[derive(Debug, Default)]
+pub struct DotfilesState {
+    /// None until the first dry run lands.
+    pub items: Option<Vec<Item>>,
+    pub edited: Vec<Edited>,
+    pub problems: Vec<String>,
+    pub list: Scroller,
+}
+
+impl DotfilesState {
+    pub fn rows(&self, has_palettes: bool, vars: &[String]) -> Vec<DotRow> {
+        let mut rows: Vec<DotRow> = (0..self.problems.len()).map(DotRow::Problem).collect();
+        rows.extend((0..self.edited.len()).map(DotRow::Edited));
+        let edited: BTreeSet<_> = self.edited.iter().map(|edit| &edit.target).collect();
+        let items = self.items.as_deref().unwrap_or_default();
+        let mut current = 0;
+        for (index, item) in items.iter().enumerate() {
+            if item.change == Change::Unchanged {
+                current += 1;
+            } else if !(item.change == Change::Skipped && edited.contains(&item.target)) {
+                rows.push(DotRow::Change(index));
+            }
+        }
+        if current > 0 {
+            rows.push(DotRow::Current(current));
+        }
+        if has_palettes {
+            rows.push(DotRow::Palette);
+        }
+        rows.extend(vars.iter().cloned().map(DotRow::Var));
+        rows
+    }
+
+    /// Targets a deploy would leave alone.
+    pub fn unchanged(&self) -> impl Iterator<Item = &Item> {
+        self.items
+            .iter()
+            .flatten()
+            .filter(|item| item.change == Change::Unchanged)
+    }
+}
+
+// ----- repos ----------------------------------------------------------------
+
+/// One line of the repos panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepoRow {
+    /// Index into the workspace's roots.
+    Root(usize),
+    Schedule,
+}
+
+#[derive(Debug, Default)]
+pub struct ReposState {
+    /// None until the first check lands.
+    pub data: Option<(Vec<Incoming>, Vec<Outgoing>)>,
+    pub schedule: Option<schedule::Status>,
+    pub list: Scroller,
+}
+
+impl ReposState {
+    pub fn incoming(&self, root: &str) -> Option<&Incoming> {
+        self.data.as_ref()?.0.iter().find(|repo| repo.root == root)
+    }
+
+    pub fn outgoing(&self, root: &str) -> Option<&Outgoing> {
+        self.data.as_ref()?.1.iter().find(|repo| repo.root == root)
+    }
+}
+
+// ----- helpers --------------------------------------------------------------
 
 /// Strips control characters from text that came from outside (log output,
 /// diffs, config descriptions), so it can't move the cursor or inject escape
@@ -321,8 +480,7 @@ pub fn clean(text: &str) -> String {
 }
 
 /// What a planned action is called in the UI.
-pub fn action_label(action: crate::plan::Action) -> &'static str {
-    use crate::plan::Action;
+pub fn action_label(action: Action) -> &'static str {
     match action {
         Action::Install => "install",
         Action::Upgrade => "upgrade",

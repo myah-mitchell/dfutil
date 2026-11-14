@@ -82,20 +82,28 @@ Running `dfapp` with no arguments on a terminal opens the UI.
 
 ## Terminal UI
 
-`dfapp` with no arguments opens five tabs: Tools, Presets, Dotfiles, Sync, and Settings. Actions run one at a time, with progress in the log pane, and press `?` for the full key list.
+`dfapp` with no arguments opens a panel view. Four panels stack down the left side (Tools, Presets, Dotfiles, and Repos), and a detail pane beside them describes whatever is selected, with buttons for the actions that apply to it. In a terminal narrower than 90 columns, the detail pane moves under the panels. A job strip above the hint bar shows the running action or the last result, and actions run one at a time.
+
+Everything works with the mouse as well as the keyboard: click a panel, a line, a mark box, a hint chip, or a button; click the palette in the top bar to switch it; scroll the wheel over a list or the detail pane. Press `?` for the full key list.
+
+The Tools panel groups tools by status, by preset, or by `category` (see the [configuration reference](docs/config.md#tools)). Press `g`, or click the group switch, to change the grouping. Groups that need attention start open.
 
 | Keys | Where | Does |
 | --- | --- | --- |
-| `Tab`, `1` to `5` | Anywhere | Switches tabs |
-| `j`, `k`, `g`, `G` | Lists | Moves down, up, to the top, to the bottom |
-| `l`, `q` | Anywhere | Enlarges the log, quits |
-| `R` | Every tab but Presets | Refreshes the tab |
-| `Space`, `m`, `/` | Tools | Marks the tool, marks every visible tool, filters the list |
-| `a`, `r`, `b` | Tools | Applies the planned changes, reinstalls the marked tools, rolls back |
-| `i`, `u`, `n` | Tools | Installs or uninstalls the marked tools, adds a tool to `dfapp.toml` |
-| `Space`, `n` | Presets | Toggles a preset, creates one from the marked tools |
-| `d`, `c`, `p`, `e`, `v` | Dotfiles | Deploys, captures, cycles the palette, edits a variable, shows only changes |
-| `s`, `U`, `J`, `K` | Sync | Syncs, runs a full update, scrolls the diff a page |
+| `1` to `4`, `Tab` | Anywhere | Focuses a panel |
+| `j`, `k`, `G` | Lists | Moves down, up, to the bottom |
+| `J`, `K`, `Ctrl+d`, `Ctrl+u` | Anywhere | Scrolls the detail pane a line or a page |
+| `a`, `U` | Anywhere | Applies every planned change, syncs then applies |
+| `L`, `?`, `q` | Anywhere | Opens the log, opens help, quits |
+| `Space`, `m`, `/` | Tools | Marks the tool or opens a group, marks every tool shown, filters |
+| `h`, `l`, `g` | Tools | Closes a group, opens it, changes the grouping |
+| `u`, `r`, `x`, `b` | Tools | Installs or updates, reinstalls, uninstalls, rolls back |
+| `n` | Tools | Adds a tool to `dfapp.toml` |
+| `Space`, `n` | Presets | Turns a preset on or off, creates one from the marked tools |
+| `d`, `c`, `p`, `e` | Dotfiles | Deploys, captures edits, switches the palette, edits a variable |
+| `s`, `R` | Repos | Syncs, checks again |
+
+`Esc` clears the filter, then the marks, then quits.
 
 ## Use from ansible
 

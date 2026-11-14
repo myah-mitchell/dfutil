@@ -1,22 +1,30 @@
-//! Application state and key handling. Nothing here touches the terminal:
-//! [`App::handle_key`] and [`App::on_event`] are plain state transitions, and
-//! the event loop in `mod.rs` carries out the [`Effect`]s they return.
+//! Application state, keys, and mouse handling. Nothing here touches the
+//! terminal: [`App::handle_key`], [`App::handle_mouse`], and
+//! [`App::on_event`] are plain state transitions, and the event loop in
+//! `mod.rs` carries out the [`Effect`]s they return.
 
-use super::input::{Field, Form, FormEvent, FormKind};
+use super::input::{Field, FieldKind, Form, FormEvent, FormKind};
 use super::job::{JobContext, JobEvent, JobOutput, JobRequest};
+use super::mouse::{Hit, HitMap};
 use super::state::*;
 use crate::config::{PresetDef, ToolDef, ToolKind, is_valid_name};
 use crate::deploy::{self, Change, Edited, Item};
 use crate::gitops::SyncResult;
 use crate::ops::{self, ApplyReport, Session};
-use crate::plan::{Action, Plan};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::collections::{BTreeMap, VecDeque};
+use crate::plan::{Action, Plan, ToolRow};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Instant;
 
-/// Lines kept in the log pane.
+/// Lines kept in the log.
 const LOG_CAP: usize = 1000;
 /// Rows moved by Page Up and Page Down.
 const PAGE: usize = 10;
+/// Lines the scroll wheel moves a scrollable pane.
+const WHEEL: usize = 3;
 
 /// Field positions in the add-tool form.
 pub const F_NAME: usize = 0;
@@ -26,8 +34,9 @@ pub const F_PIN: usize = 3;
 pub const F_CRATE: usize = 4;
 pub const F_ASSET: usize = 5;
 pub const F_BINS: usize = 6;
-pub const F_DESCRIPTION: usize = 7;
-pub const F_INSTALL_NOW: usize = 8;
+pub const F_CATEGORY: usize = 7;
+pub const F_DESCRIPTION: usize = 8;
+pub const F_INSTALL_NOW: usize = 9;
 
 /// Kinds offered by the add-tool form. `script` tools need install commands
 /// the form has no room for, so they stay a hand edit of `dfapp.toml`.
@@ -53,7 +62,13 @@ pub struct Confirm {
 
 #[derive(Debug)]
 pub enum Modal {
-    Help,
+    Help {
+        scroll: usize,
+    },
+    /// The full log. `None` follows the newest line.
+    Log {
+        scroll: Option<usize>,
+    },
     Confirm(Confirm),
     Form(Form),
 }
@@ -64,39 +79,81 @@ pub struct LogLine {
     pub error: bool,
 }
 
-/// The one-line message under the tabs; cleared by the next key press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Info,
+    Success,
+    Error,
+}
+
+/// The message in the job strip; cleared by the next key press or click.
 #[derive(Clone, Debug)]
 pub struct StatusMessage {
     pub text: String,
-    pub error: bool,
+    pub tone: Tone,
 }
 
 #[derive(Debug)]
 pub struct RunningJob {
     pub label: String,
+    pub started: Instant,
+    /// The newest log line, shown beside the spinner.
+    pub last_line: Option<String>,
     /// Reload the session and refresh these views when the job ends.
     reload: bool,
     after: Vec<JobRequest>,
-    /// Whether this was the version lookup, whose failure the Tools tab shows.
+    /// Whether this was the version lookup, whose failure the Tools panel shows.
     is_plan: bool,
+}
+
+/// A key chip in the hint bar, or a button in the detail pane. Clicking one
+/// presses its key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Button {
+    pub keys: &'static str,
+    pub code: KeyCode,
+    pub label: String,
+    pub primary: bool,
+}
+
+fn button(keys: &'static str, code: KeyCode, label: impl Into<String>) -> Button {
+    Button {
+        keys,
+        code,
+        label: label.into(),
+        primary: false,
+    }
+}
+
+fn primary(keys: &'static str, code: KeyCode, label: impl Into<String>) -> Button {
+    Button {
+        primary: true,
+        ..button(keys, code, label)
+    }
 }
 
 pub struct App {
     pub session: Session,
-    pub tab: Tab,
+    pub focus: Panel,
     pub tools: ToolsState,
     pub presets: PresetsState,
     pub dotfiles: DotfilesState,
-    pub sync: SyncState,
-    pub settings: SettingsState,
+    pub repos: ReposState,
     pub modal: Option<Modal>,
     pub log: VecDeque<LogLine>,
-    pub log_large: bool,
     pub status: Option<StatusMessage>,
     pub job: Option<RunningJob>,
     pub quit_armed: bool,
     /// Animation frame for the running-job indicator.
     pub frame: usize,
+    pub detail_scroll: usize,
+    /// The last scroll position the detail pane can use, set by the renderer.
+    pub detail_max: Cell<usize>,
+    /// The last scroll position the open dialog can use, set by the renderer.
+    pub modal_max: Cell<usize>,
+    /// The selection the detail pane was showing, so a new one starts at the top.
+    detail_for: String,
+    pub hits: HitMap,
     /// Read-only refreshes waiting for the worker to be free.
     wanted: VecDeque<JobRequest>,
 }
@@ -105,23 +162,28 @@ impl App {
     pub fn new(session: Session) -> Self {
         let mut app = Self {
             session,
-            tab: Tab::Tools,
+            focus: Panel::Tools,
             tools: ToolsState::default(),
             presets: PresetsState::default(),
             dotfiles: DotfilesState::default(),
-            sync: SyncState::default(),
-            settings: SettingsState::default(),
+            repos: ReposState::default(),
             modal: None,
             log: VecDeque::new(),
-            log_large: false,
             status: None,
             job: None,
             quit_armed: false,
             frame: 0,
+            detail_scroll: 0,
+            detail_max: Cell::new(0),
+            modal_max: Cell::new(0),
+            detail_for: String::new(),
+            hits: HitMap::default(),
             wanted: VecDeque::new(),
         };
         app.want(JobRequest::LoadPlan);
         app.want(JobRequest::LoadDotfiles);
+        app.want(JobRequest::LoadSchedule);
+        app.want(JobRequest::LoadSync);
         let notes = app.session.workspace.notes.clone();
         for note in notes {
             app.log_line(format!("note: {note}"));
@@ -155,21 +217,22 @@ impl App {
         }
     }
 
-    fn info(&mut self, text: impl Into<String>) {
+    fn say(&mut self, text: impl Into<String>, tone: Tone) {
         self.status = Some(StatusMessage {
-            text: text.into(),
-            error: false,
+            text: clean(&text.into()),
+            tone,
         });
     }
 
-    /// An error message in the status line and the log.
+    fn info(&mut self, text: impl Into<String>) {
+        self.say(text, Tone::Info);
+    }
+
+    /// An error message in the job strip and the log.
     fn fail(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.log_error(&text);
-        self.status = Some(StatusMessage {
-            text: clean(text.lines().next().unwrap_or("")),
-            error: true,
-        });
+        self.say(text.lines().next().unwrap_or(""), Tone::Error);
     }
 
     // ----- jobs -----------------------------------------------------------
@@ -220,14 +283,14 @@ impl App {
         if request.mutates() {
             after.push(JobRequest::LoadPlan);
             after.push(JobRequest::LoadDotfiles);
-            if self.sync.requested || matches!(request, JobRequest::Sync | JobRequest::Update) {
-                after.push(JobRequest::LoadSync);
-            }
+            after.push(JobRequest::LoadSync);
         }
         let label = request.label();
         self.log_line(format!("> {label}"));
         self.job = Some(RunningJob {
             label,
+            started: Instant::now(),
+            last_line: None,
             reload: request.mutates(),
             after,
             is_plan: matches!(request, JobRequest::LoadPlan),
@@ -238,11 +301,17 @@ impl App {
     /// Applies a message from the worker.
     pub fn on_event(&mut self, event: JobEvent) {
         match event {
-            JobEvent::Log(line) => self.log_line(line),
+            JobEvent::Log(line) => {
+                if let Some(job) = &mut self.job {
+                    job.last_line = Some(clean(&line));
+                }
+                self.log_line(line);
+            }
             JobEvent::Done(result) => {
                 let job = self.job.take();
+                let label = job.as_ref().map(|job| job.label.clone());
                 match result {
-                    Ok(output) => self.apply_output(output),
+                    Ok(output) => self.apply_output(output, label.as_deref()),
                     Err(error) => {
                         if let Some(job) = &job {
                             if job.is_plan {
@@ -264,30 +333,39 @@ impl App {
                 }
             }
         }
+        self.settle();
     }
 
     fn reload_session(&mut self) {
         match self.session.reload() {
-            Ok(()) => {
-                let tools = self.session.workspace.config.tools.len();
-                self.tools.list.clamp(tools);
-                let presets = self.session.workspace.config.presets.len();
-                self.presets.list.clamp(presets);
-            }
+            Ok(()) => self.clamp_lists(),
             Err(error) => self.fail(format!("reloading the config failed: {error:#}")),
         }
     }
 
-    fn apply_output(&mut self, output: JobOutput) {
+    fn clamp_lists(&mut self) {
+        let lens = (
+            self.tool_items().len(),
+            self.preset_names().len(),
+            self.dot_rows().len(),
+            self.repo_rows().len(),
+        );
+        self.tools.list.clamp(lens.0);
+        self.presets.list.clamp(lens.1);
+        self.dotfiles.list.clamp(lens.2);
+        self.repos.list.clamp(lens.3);
+    }
+
+    fn apply_output(&mut self, output: JobOutput, label: Option<&str>) {
         match output {
             JobOutput::Plan(plan) => {
                 let errors = plan.errors().count();
                 if errors > 0 {
                     self.log_error(format!(
-                        "{errors} tool(s) could not be looked up (see the Tools tab)"
+                        "{errors} tool(s) could not be looked up (see Needs attention)"
                     ));
                 }
-                self.tools.set_plan(plan);
+                self.set_plan(plan);
             }
             JobOutput::Dotfiles {
                 items,
@@ -297,29 +375,34 @@ impl App {
                 for problem in &problems {
                     self.log_error(problem);
                 }
-                let len = items.len();
                 self.dotfiles.items = Some(items);
                 self.dotfiles.edited = edited;
                 self.dotfiles.problems = problems;
-                self.dotfiles.targets.clamp(len);
+                let len = self.dot_rows().len();
+                self.dotfiles.list.clamp(len);
             }
             JobOutput::Sync { incoming, outgoing } => {
-                self.sync.data = Some((incoming, outgoing));
-                let len = self.sync.entries().len();
-                self.sync.list.clamp(len);
-                self.sync.diff_scroll = 0;
+                self.repos.data = Some((incoming, outgoing));
+                let len = self.repo_rows().len();
+                self.repos.list.clamp(len);
             }
-            JobOutput::Schedule(status) => self.settings.schedule = Some(status),
-            JobOutput::Report(report) => self.show_report(&report),
+            JobOutput::Schedule(status) => self.repos.schedule = Some(status),
+            JobOutput::Report(report) => self.show_report(&report, label.unwrap_or("job")),
             JobOutput::Deployed(items) => {
                 let (lines, errors) = deploy_summary(&items);
+                let changed = lines.len();
                 for line in lines {
                     self.log_line(line);
                 }
                 if errors > 0 {
-                    self.fail(format!("deploy finished with {errors} error(s)"));
+                    self.fail(format!(
+                        "deploy finished with {errors} error(s); press L for the log"
+                    ));
                 } else {
-                    self.info("dotfiles deployed");
+                    self.say("✓ dotfiles deployed", Tone::Success);
+                    if changed == 0 {
+                        self.say("✓ dotfiles deployed, nothing changed", Tone::Success);
+                    }
                 }
             }
             JobOutput::Captured(edited) => {
@@ -340,17 +423,22 @@ impl App {
                 if problems > 0 {
                     self.fail(format!("{problems} edit(s) could not be captured"));
                 } else {
-                    self.info(format!("captured {} edited file(s)", edited.len()));
+                    self.say(
+                        format!("✓ captured {} edited file(s)", edited.len()),
+                        Tone::Success,
+                    );
                 }
             }
             JobOutput::Message(text) => {
                 self.log_line(&text);
-                self.info(text);
+                self.say(format!("✓ {text}"), Tone::Success);
             }
         }
     }
 
-    fn show_report(&mut self, report: &ApplyReport) {
+    fn show_report(&mut self, report: &ApplyReport, label: &str) {
+        let mut done: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut failed = 0;
         for outcome in &report.tools {
             let line = format!(
                 "{}: {} {}{}",
@@ -364,8 +452,10 @@ impl App {
                 }
             );
             if outcome.ok {
+                *done.entry(past_tense(outcome.action)).or_default() += 1;
                 self.log_line(line);
             } else {
+                failed += 1;
                 self.log_error(line);
             }
         }
@@ -390,18 +480,168 @@ impl App {
         for note in &report.notes {
             self.log_line(format!("note: {note}"));
         }
-        if report.failed() {
-            self.fail("finished with failures; see the log");
-        } else if report.changed() {
-            self.info("done");
+        let counts: Vec<String> = done
+            .iter()
+            .map(|(verb, count)| format!("{count} {verb}"))
+            .collect();
+        let summary = if counts.is_empty() {
+            String::new()
         } else {
-            self.info("done, nothing changed");
+            format!(": {}", counts.join(", "))
+        };
+        if report.failed() {
+            let failures = failed + report.resolve_errors.len();
+            self.fail(format!(
+                "{label} finished with {} failure(s){summary}; press L for the log",
+                failures.max(1)
+            ));
+        } else if report.changed() {
+            self.say(format!("✓ {label}: done{summary}"), Tone::Success);
+        } else {
+            self.say(format!("✓ {label}: done, nothing changed"), Tone::Success);
+        }
+    }
+
+    // ----- derived views ----------------------------------------------------
+
+    /// Presets in effect on this host, including ones pulled in by `extends`.
+    pub fn active_presets(&self) -> BTreeSet<String> {
+        let workspace = &self.session.workspace;
+        crate::selection::expand_presets(&workspace.host.presets, &workspace.config.presets)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn tool_items(&self) -> Vec<ToolItem> {
+        self.tools.items(
+            &self.session.workspace.config.presets,
+            &self.active_presets(),
+        )
+    }
+
+    pub fn current_item(&self) -> Option<ToolItem> {
+        self.tool_items().get(self.tools.list.cursor).cloned()
+    }
+
+    pub fn current_tool(&self) -> Option<&ToolRow> {
+        match self.current_item()? {
+            ToolItem::Tool(index) => self.tools.rows().get(index),
+            ToolItem::Header { .. } => None,
+        }
+    }
+
+    /// Marked tool names, or the highlighted one when nothing is marked.
+    pub fn tool_targets(&self) -> Vec<String> {
+        if self.tools.marked.is_empty() {
+            self.current_tool()
+                .map(|row| vec![row.name.clone()])
+                .unwrap_or_default()
+        } else {
+            self.tools.marked.iter().cloned().collect()
+        }
+    }
+
+    fn tool_anchor(&self) -> Option<ToolAnchor> {
+        let item = self.current_item()?;
+        Some(ToolsState::anchor(&item, self.tools.rows()))
+    }
+
+    /// Puts the cursor back on `anchor` after the list changed, or on the
+    /// header of the group it disappeared into.
+    fn restore_tool_anchor(&mut self, anchor: Option<ToolAnchor>) {
+        let items = self.tool_items();
+        if let Some(anchor) = anchor
+            && let Some(index) = ToolsState::find(&items, self.tools.rows(), &anchor)
+        {
+            self.tools.list.cursor = index;
+        }
+        self.tools.list.clamp(items.len());
+    }
+
+    fn set_plan(&mut self, plan: Plan) {
+        let anchor = self.tool_anchor();
+        self.tools
+            .marked
+            .retain(|marked| plan.rows.iter().any(|row| &row.name == marked));
+        self.tools.plan = Some(plan);
+        self.tools.error = None;
+        self.restore_tool_anchor(anchor);
+    }
+
+    pub fn preset_names(&self) -> Vec<String> {
+        self.session
+            .workspace
+            .config
+            .presets
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    pub fn current_preset(&self) -> Option<String> {
+        self.preset_names().get(self.presets.list.cursor).cloned()
+    }
+
+    pub fn palette_names(&self) -> Vec<String> {
+        self.session.workspace.palettes.keys().cloned().collect()
+    }
+
+    pub fn var_names(&self) -> Vec<String> {
+        self.session.workspace.config.vars.keys().cloned().collect()
+    }
+
+    pub fn dot_rows(&self) -> Vec<DotRow> {
+        self.dotfiles.rows(
+            !self.session.workspace.palettes.is_empty(),
+            &self.var_names(),
+        )
+    }
+
+    pub fn current_dot(&self) -> Option<DotRow> {
+        self.dot_rows().get(self.dotfiles.list.cursor).cloned()
+    }
+
+    pub fn repo_rows(&self) -> Vec<RepoRow> {
+        let mut rows: Vec<RepoRow> = (0..self.session.workspace.roots.len())
+            .map(RepoRow::Root)
+            .collect();
+        rows.push(RepoRow::Schedule);
+        rows
+    }
+
+    pub fn current_repo(&self) -> Option<RepoRow> {
+        self.repo_rows().get(self.repos.list.cursor).cloned()
+    }
+
+    /// Identifies what the detail pane shows, so a new selection scrolls it
+    /// back to the top.
+    fn detail_key(&self) -> String {
+        let which = match self.focus {
+            Panel::Tools => format!("{:?}", self.tool_anchor()),
+            Panel::Presets => format!("{:?}", self.current_preset()),
+            Panel::Dotfiles => format!("{:?}", self.current_dot()),
+            Panel::Repos => format!("{:?}", self.current_repo()),
+        };
+        format!("{:?}/{which}", self.focus)
+    }
+
+    fn settle(&mut self) {
+        let key = self.detail_key();
+        if key != self.detail_for {
+            self.detail_for = key;
+            self.detail_scroll = 0;
         }
     }
 
     // ----- keys -----------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+        let effect = self.key(key);
+        self.settle();
+        effect
+    }
+
+    fn key(&mut self, key: KeyEvent) -> Effect {
         let armed = std::mem::take(&mut self.quit_armed);
         self.status = None;
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -416,29 +656,48 @@ impl App {
             return Effect::None;
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc if !control => return self.request_quit(armed),
-            KeyCode::Tab => return self.goto(self.tab.next()),
-            KeyCode::BackTab => return self.goto(self.tab.prev()),
-            KeyCode::Char(digit @ '1'..='5') if !control => {
-                return self.goto(Tab::ALL[digit as usize - '1' as usize]);
-            }
-            KeyCode::Char('?') => {
-                self.modal = Some(Modal::Help);
+            KeyCode::Char('d') if control => return self.scroll_detail(PAGE as isize),
+            KeyCode::Char('u') if control => return self.scroll_detail(-(PAGE as isize)),
+            _ if control => return Effect::None,
+            KeyCode::Char('q') => return self.request_quit(armed),
+            KeyCode::Esc => {
+                if !self.tools.filter.is_empty() {
+                    self.change_tools(|tools| tools.filter.clear());
+                } else if !self.tools.marked.is_empty() {
+                    self.tools.marked.clear();
+                    self.info("marks cleared");
+                } else {
+                    return self.request_quit(armed);
+                }
                 return Effect::None;
             }
-            KeyCode::Char('l') if !control => {
-                self.log_large = !self.log_large;
-                return Effect::None;
+            KeyCode::Tab => self.focus = self.focus.next(),
+            KeyCode::BackTab => self.focus = self.focus.prev(),
+            KeyCode::Char(digit @ '1'..='4') => {
+                self.focus = Panel::ALL[digit as usize - '1' as usize];
             }
-            _ => {}
+            KeyCode::Char('?') => self.modal = Some(Modal::Help { scroll: 0 }),
+            KeyCode::Char('L') => self.modal = Some(Modal::Log { scroll: None }),
+            KeyCode::Char('J') => return self.scroll_detail(1),
+            KeyCode::Char('K') => return self.scroll_detail(-1),
+            KeyCode::Char('a') => self.apply_all(),
+            KeyCode::Char('U') => self.confirm_update(),
+            _ => {
+                return match self.focus {
+                    Panel::Tools => self.tools_key(key),
+                    Panel::Presets => self.presets_key(key),
+                    Panel::Dotfiles => self.dotfiles_key(key),
+                    Panel::Repos => self.repos_key(key),
+                };
+            }
         }
-        match self.tab {
-            Tab::Tools => self.tools_key(key),
-            Tab::Presets => self.presets_key(key),
-            Tab::Dotfiles => self.dotfiles_key(key),
-            Tab::Sync => self.sync_key(key),
-            Tab::Settings => self.settings_key(key),
-        }
+        Effect::None
+    }
+
+    fn scroll_detail(&mut self, by: isize) -> Effect {
+        let max = self.detail_max.get();
+        self.detail_scroll = self.detail_scroll.saturating_add_signed(by).min(max);
+        Effect::None
     }
 
     fn request_quit(&mut self, armed: bool) -> Effect {
@@ -454,25 +713,37 @@ impl App {
         Effect::Quit
     }
 
-    fn goto(&mut self, tab: Tab) -> Effect {
-        self.tab = tab;
-        match tab {
-            Tab::Sync if !self.sync.requested => {
-                self.sync.requested = true;
-                self.want(JobRequest::LoadSync);
-            }
-            Tab::Settings if !self.settings.requested => {
-                self.settings.requested = true;
-                self.want(JobRequest::LoadSchedule);
-            }
-            _ => {}
-        }
-        Effect::None
-    }
-
     fn modal_key(&mut self, modal: Modal, key: KeyEvent) -> Effect {
         match modal {
-            Modal::Help => Effect::None,
+            Modal::Help { mut scroll } => {
+                match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => scroll += 1,
+                    KeyCode::Up | KeyCode::Char('k') => scroll = scroll.saturating_sub(1),
+                    KeyCode::PageDown => scroll += PAGE,
+                    KeyCode::PageUp => scroll = scroll.saturating_sub(PAGE),
+                    _ => return Effect::None,
+                }
+                let scroll = scroll.min(self.modal_max.get());
+                self.modal = Some(Modal::Help { scroll });
+                Effect::None
+            }
+            Modal::Log { scroll } => {
+                let last = self.modal_max.get();
+                let at = scroll.unwrap_or(last);
+                let scroll = match key.code {
+                    KeyCode::Down | KeyCode::Char('j') => Some(at + 1),
+                    KeyCode::Up | KeyCode::Char('k') => Some(at.saturating_sub(1)),
+                    KeyCode::PageDown => Some(at + PAGE),
+                    KeyCode::PageUp => Some(at.saturating_sub(PAGE)),
+                    KeyCode::Home | KeyCode::Char('g') => Some(0),
+                    KeyCode::End | KeyCode::Char('G') => None,
+                    _ => return Effect::None,
+                };
+                // Scrolling to the end follows new lines again.
+                let scroll = scroll.filter(|line| *line < last);
+                self.modal = Some(Modal::Log { scroll });
+                Effect::None
+            }
             Modal::Confirm(mut confirm) => {
                 match key.code {
                     KeyCode::Char('y' | 'Y') if confirm.request.is_some() => {
@@ -480,7 +751,7 @@ impl App {
                             // Keep the dialog so the choice isn't lost.
                             let label = job.label.clone();
                             self.info(format!(
-                                "{label} is still running; press y again when it finishes"
+                                "{label} is still running; confirm again when it finishes"
                             ));
                             self.modal = Some(Modal::Confirm(confirm));
                             return Effect::None;
@@ -498,7 +769,7 @@ impl App {
                     KeyCode::Enter if confirm.request.is_none() => return Effect::None,
                     _ => {}
                 }
-                confirm.scroll = confirm.scroll.min(confirm.lines.len().saturating_sub(1));
+                confirm.scroll = confirm.scroll.min(self.modal_max.get());
                 self.modal = Some(Modal::Confirm(confirm));
                 Effect::None
             }
@@ -520,46 +791,390 @@ impl App {
         }
     }
 
-    // ----- tools tab ------------------------------------------------------
+    // ----- mouse ----------------------------------------------------------
+
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Effect {
+        let hit = self.hits.at(mouse.column, mouse.row);
+        let effect = match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.quit_armed = false;
+                self.status = None;
+                match hit {
+                    Some(hit) => self.click(hit),
+                    None => Effect::None,
+                }
+            }
+            MouseEventKind::ScrollDown => self.wheel(hit, 1),
+            MouseEventKind::ScrollUp => self.wheel(hit, -1),
+            _ => Effect::None,
+        };
+        self.settle();
+        effect
+    }
+
+    fn press(&mut self, code: KeyCode) -> Effect {
+        self.key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn click(&mut self, hit: Hit) -> Effect {
+        if self.modal.is_some() {
+            return self.modal_click(hit);
+        }
+        if self.tools.filtering && hit != Hit::Filter {
+            self.tools.filtering = false;
+        }
+        match hit {
+            Hit::Focus(panel) => self.focus = panel,
+            Hit::ToolItem(index) => {
+                self.focus = Panel::Tools;
+                self.tools.list.cursor = index;
+                if let Some(ToolItem::Header { key, open, .. }) = self.tool_items().get(index) {
+                    self.set_open(key.clone(), !open);
+                }
+            }
+            Hit::ToolMark(index) => {
+                self.focus = Panel::Tools;
+                self.tools.list.cursor = index;
+                self.toggle_mark();
+            }
+            Hit::Grouping(grouping) => {
+                self.focus = Panel::Tools;
+                self.change_tools(|tools| tools.grouping = grouping);
+            }
+            Hit::Filter => {
+                self.focus = Panel::Tools;
+                self.tools.filtering = true;
+            }
+            Hit::Preset(index) => {
+                self.focus = Panel::Presets;
+                self.presets.list.cursor = index;
+            }
+            Hit::PresetToggle(index) => {
+                self.focus = Panel::Presets;
+                self.presets.list.cursor = index;
+                self.toggle_preset();
+            }
+            Hit::DotRow(index) => {
+                self.focus = Panel::Dotfiles;
+                self.dotfiles.list.cursor = index;
+            }
+            Hit::RepoRow(index) => {
+                self.focus = Panel::Repos;
+                self.repos.list.cursor = index;
+            }
+            Hit::Key(code) => return self.press(code),
+            Hit::Palette => return self.cycle_palette(),
+            Hit::Detail | Hit::Backdrop | Hit::ModalBody | Hit::FormField(_) => {}
+        }
+        Effect::None
+    }
+
+    fn modal_click(&mut self, hit: Hit) -> Effect {
+        match hit {
+            Hit::Key(code) => self.press(code),
+            Hit::Backdrop => {
+                // A click outside closes a dialog, but never throws away a
+                // half-filled form.
+                if !matches!(self.modal, Some(Modal::Form(_))) {
+                    self.modal = None;
+                }
+                Effect::None
+            }
+            Hit::FormField(index) => {
+                if let Some(Modal::Form(form)) = &mut self.modal
+                    && index < form.fields.len()
+                {
+                    let already = form.focus == index;
+                    form.focus = index;
+                    let field = &mut form.fields[index];
+                    match &mut field.kind {
+                        FieldKind::Choice { options, selected } if already => {
+                            *selected = (*selected + 1) % options.len();
+                        }
+                        FieldKind::Check(value) => *value = !*value,
+                        _ => {}
+                    }
+                }
+                Effect::None
+            }
+            _ => Effect::None,
+        }
+    }
+
+    fn wheel(&mut self, hit: Option<Hit>, direction: isize) -> Effect {
+        if let Some(modal) = &mut self.modal {
+            let by = WHEEL as isize * direction;
+            let max = self.modal_max.get();
+            match modal {
+                Modal::Help { scroll } => *scroll = scroll.saturating_add_signed(by).min(max),
+                Modal::Confirm(confirm) => {
+                    confirm.scroll = confirm.scroll.saturating_add_signed(by).min(max);
+                }
+                Modal::Log { scroll } => {
+                    let last = max;
+                    let at = scroll.unwrap_or(last).saturating_add_signed(by);
+                    *scroll = (at < last).then_some(at);
+                }
+                Modal::Form(_) => {}
+            }
+            return Effect::None;
+        }
+        let Some(hit) = hit else {
+            return Effect::None;
+        };
+        let panel = match hit {
+            Hit::Detail => return self.scroll_detail(WHEEL as isize * direction),
+            Hit::Focus(panel) => panel,
+            Hit::ToolItem(_) | Hit::ToolMark(_) | Hit::Grouping(_) | Hit::Filter => Panel::Tools,
+            Hit::Preset(_) | Hit::PresetToggle(_) => Panel::Presets,
+            Hit::DotRow(_) => Panel::Dotfiles,
+            Hit::RepoRow(_) => Panel::Repos,
+            _ => return Effect::None,
+        };
+        self.focus = panel;
+        let code = if direction > 0 {
+            KeyCode::Down
+        } else {
+            KeyCode::Up
+        };
+        self.press(code)
+    }
+
+    // ----- hints and buttons --------------------------------------------------
+
+    /// The hint bar for the focused panel. Every chip is clickable.
+    pub fn hints(&self) -> Vec<Button> {
+        let mut hints = match self.focus {
+            Panel::Tools if self.tools.filtering => vec![
+                button("enter", KeyCode::Enter, "keep filter"),
+                button("esc", KeyCode::Esc, "clear filter"),
+            ],
+            Panel::Tools => vec![
+                button("space", KeyCode::Char(' '), "mark"),
+                button("u", KeyCode::Char('u'), "update"),
+                button("r", KeyCode::Char('r'), "reinstall"),
+                button("b", KeyCode::Char('b'), "roll back"),
+                button("x", KeyCode::Char('x'), "uninstall"),
+                button("g", KeyCode::Char('g'), "group"),
+                button("/", KeyCode::Char('/'), "filter"),
+                button("n", KeyCode::Char('n'), "new tool"),
+            ],
+            Panel::Presets => vec![
+                button("space", KeyCode::Char(' '), "turn on/off"),
+                button("n", KeyCode::Char('n'), "new from marked"),
+            ],
+            Panel::Dotfiles => vec![
+                button("d", KeyCode::Char('d'), "deploy"),
+                button("c", KeyCode::Char('c'), "capture edits"),
+                button("p", KeyCode::Char('p'), "palette"),
+                button("e", KeyCode::Char('e'), "edit variable"),
+            ],
+            Panel::Repos => vec![
+                button("s", KeyCode::Char('s'), "sync"),
+                button("R", KeyCode::Char('R'), "check again"),
+            ],
+        };
+        if !self.tools.filtering {
+            let changes = self
+                .tools
+                .plan
+                .as_ref()
+                .map_or(0, |plan| plan.changes().count());
+            hints.push(button(
+                "a",
+                KeyCode::Char('a'),
+                format!("apply all ({changes})"),
+            ));
+            hints.push(button("U", KeyCode::Char('U'), "update everything"));
+            hints.push(button("L", KeyCode::Char('L'), "log"));
+            hints.push(button("?", KeyCode::Char('?'), "help"));
+            hints.push(button("q", KeyCode::Char('q'), "quit"));
+        }
+        hints
+    }
+
+    /// Buttons under the detail pane for the focused selection.
+    pub fn detail_actions(&self) -> Vec<Button> {
+        match self.focus {
+            Panel::Tools => {
+                let Some(row) = self.current_tool() else {
+                    return match self.current_item() {
+                        Some(ToolItem::Header { open, .. }) => vec![primary(
+                            "space",
+                            KeyCode::Char(' '),
+                            if open { "Close group" } else { "Open group" },
+                        )],
+                        None => Vec::new(),
+                        Some(ToolItem::Tool(_)) => Vec::new(),
+                    };
+                };
+                let available = row.available.clone().unwrap_or_default();
+                let mut buttons = match Status::of(row) {
+                    Status::Upgrade => {
+                        vec![primary(
+                            "u",
+                            KeyCode::Char('u'),
+                            format!("Update to {available}"),
+                        )]
+                    }
+                    Status::Install => {
+                        vec![primary(
+                            "u",
+                            KeyCode::Char('u'),
+                            format!("Install {available}"),
+                        )]
+                    }
+                    Status::Reinstall => vec![primary("u", KeyCode::Char('u'), "Reinstall now")],
+                    Status::Off => {
+                        vec![primary("u", KeyCode::Char('u'), "Install on this host")]
+                    }
+                    Status::Remove => vec![
+                        primary("x", KeyCode::Char('x'), "Remove now"),
+                        button("u", KeyCode::Char('u'), "Keep it on this host"),
+                    ],
+                    Status::Failed => {
+                        vec![primary("R", KeyCode::Char('R'), "Look up again")]
+                    }
+                    Status::Held => vec![primary(
+                        "r",
+                        KeyCode::Char('r'),
+                        format!("Reinstall {available}"),
+                    )],
+                    Status::Current => Vec::new(),
+                };
+                if row.installed.is_some() && Status::of(row) != Status::Held {
+                    buttons.push(button("r", KeyCode::Char('r'), "Reinstall"));
+                }
+                if row.has_previous {
+                    buttons.push(button("b", KeyCode::Char('b'), "Roll back"));
+                }
+                if (row.selected || row.installed.is_some()) && Status::of(row) != Status::Remove {
+                    buttons.push(button("x", KeyCode::Char('x'), "Uninstall"));
+                }
+                buttons
+            }
+            Panel::Presets => match self.current_preset() {
+                Some(name) => {
+                    let on = self.session.workspace.host.presets.contains(&name);
+                    vec![
+                        primary(
+                            "space",
+                            KeyCode::Char(' '),
+                            if on { "Turn off" } else { "Turn on" },
+                        ),
+                        button("n", KeyCode::Char('n'), "New preset from marked tools"),
+                    ]
+                }
+                None => Vec::new(),
+            },
+            Panel::Dotfiles => match self.current_dot() {
+                Some(DotRow::Edited(_)) => vec![
+                    primary("c", KeyCode::Char('c'), "Capture into the template"),
+                    button("d", KeyCode::Char('d'), "Deploy"),
+                ],
+                Some(DotRow::Palette) => vec![primary("p", KeyCode::Char('p'), "Next palette")],
+                Some(DotRow::Var(_)) => vec![primary("e", KeyCode::Char('e'), "Edit value")],
+                Some(_) => vec![primary("d", KeyCode::Char('d'), "Deploy")],
+                None => Vec::new(),
+            },
+            Panel::Repos => match self.current_repo() {
+                Some(RepoRow::Root(_)) => vec![
+                    primary("s", KeyCode::Char('s'), "Sync now"),
+                    button("U", KeyCode::Char('U'), "Sync and apply"),
+                    button("R", KeyCode::Char('R'), "Check again"),
+                ],
+                Some(RepoRow::Schedule) => vec![button("R", KeyCode::Char('R'), "Check again")],
+                None => Vec::new(),
+            },
+        }
+    }
+
+    // ----- tools panel ------------------------------------------------------
+
+    /// Changes the tools view while keeping the cursor on the same item.
+    fn change_tools(&mut self, change: impl FnOnce(&mut ToolsState)) {
+        let anchor = self.tool_anchor();
+        change(&mut self.tools);
+        self.restore_tool_anchor(anchor);
+    }
+
+    fn set_open(&mut self, key: String, open: bool) {
+        self.change_tools(|tools| {
+            tools.open.insert(key, open);
+        });
+    }
 
     fn filter_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => self.tools.filtering = false,
             KeyCode::Esc => {
-                self.tools.filter.clear();
                 self.tools.filtering = false;
+                self.change_tools(|tools| tools.filter.clear());
             }
             _ => {
                 self.tools.filter.handle(key);
+                self.tools.list.home();
+                let len = self.tool_items().len();
+                // Land on the first match rather than its group header.
+                if len > 1 {
+                    self.tools.list.cursor = 1;
+                }
             }
         }
-        self.tools.list.home();
+    }
+
+    fn toggle_mark(&mut self) {
+        if let Some(name) = self.current_tool().map(|row| row.name.clone())
+            && !self.tools.marked.remove(&name)
+        {
+            self.tools.marked.insert(name);
+        }
     }
 
     fn tools_key(&mut self, key: KeyEvent) -> Effect {
-        let len = self.tools.visible().len();
+        let items = self.tool_items();
+        let len = items.len();
+        let current = items.get(self.tools.list.cursor).cloned();
         let list = &mut self.tools.list;
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => list.down(1, len),
             KeyCode::Up | KeyCode::Char('k') => list.up(1),
             KeyCode::PageDown => list.down(PAGE, len),
             KeyCode::PageUp => list.up(PAGE),
-            KeyCode::Home | KeyCode::Char('g') => list.home(),
+            KeyCode::Home => list.home(),
             KeyCode::End | KeyCode::Char('G') => list.end(len),
-            KeyCode::Char(' ') => {
-                if let Some(name) = self.tools.current().map(|row| row.name.clone())
-                    && !self.tools.marked.remove(&name)
-                {
-                    self.tools.marked.insert(name);
+            KeyCode::Char(' ') | KeyCode::Enter => match current {
+                Some(ToolItem::Header { key, open, .. }) => self.set_open(key, !open),
+                Some(ToolItem::Tool(_)) if key.code == KeyCode::Char(' ') => {
+                    self.toggle_mark();
+                    self.tools.list.down(1, len);
                 }
-                self.tools.list.down(1, len);
+                _ => {}
+            },
+            KeyCode::Left | KeyCode::Char('h') => {
+                // Close the group the cursor is in, and land on its header.
+                let header = items[..=self.tools.list.cursor.min(len.saturating_sub(1))]
+                    .iter()
+                    .rposition(|item| matches!(item, ToolItem::Header { .. }));
+                if let Some(index) = header
+                    && let ToolItem::Header { key, .. } = &items[index]
+                {
+                    self.tools.list.cursor = index;
+                    self.set_open(key.clone(), false);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(ToolItem::Header { key, .. }) = current {
+                    self.set_open(key, true);
+                }
             }
             KeyCode::Char('m') => {
-                let names: Vec<String> = self
-                    .tools
-                    .visible()
+                let names: Vec<String> = items
                     .iter()
-                    .map(|row| row.name.clone())
+                    .filter_map(|item| match item {
+                        ToolItem::Tool(index) => Some(self.tools.rows()[*index].name.clone()),
+                        ToolItem::Header { .. } => None,
+                    })
                     .collect();
                 if names.iter().all(|name| self.tools.marked.contains(name)) {
                     for name in &names {
@@ -569,15 +1184,19 @@ impl App {
                     self.tools.marked.extend(names);
                 }
             }
+            KeyCode::Char('g') => {
+                let next = self.tools.grouping.next();
+                self.change_tools(|tools| tools.grouping = next);
+                self.info(format!("tools grouped by {}", next.label()));
+            }
             KeyCode::Char('/') => self.tools.filtering = true,
             KeyCode::Char('R') => {
                 self.want(JobRequest::LoadPlan);
-                self.info("refreshing tool versions");
+                self.info("looking up tool versions again");
             }
-            KeyCode::Char('a') => self.tools_apply(),
+            KeyCode::Char('u') => self.tools_update(),
             KeyCode::Char('r') => self.tools_reinstall(),
-            KeyCode::Char('i') => return self.tools_install(),
-            KeyCode::Char('u') => self.tools_uninstall(),
+            KeyCode::Char('x') => self.tools_uninstall(),
             KeyCode::Char('b') => self.tools_rollback(),
             KeyCode::Char('n') => self.open_add_tool(),
             _ => {}
@@ -585,7 +1204,7 @@ impl App {
         Effect::None
     }
 
-    fn tools_apply(&mut self) {
+    fn apply_all(&mut self) {
         if self.refuse_if_busy() {
             return;
         }
@@ -614,15 +1233,69 @@ impl App {
         }));
     }
 
+    /// Installs, upgrades, or keeps the marked or highlighted tools.
+    fn tools_update(&mut self) {
+        if self.refuse_if_busy() {
+            return;
+        }
+        let mut names = Vec::new();
+        let mut lines = Vec::new();
+        let mut skipped = Vec::new();
+        for name in self.tool_targets() {
+            let Some(row) = self.tools.row(&name) else {
+                continue;
+            };
+            let available = clean(row.available.as_deref().unwrap_or("newest"));
+            let installed = clean(row.installed.as_deref().unwrap_or("-"));
+            let (verb, detail) = match Status::of(row) {
+                Status::Install => ("install", available),
+                Status::Upgrade => ("upgrade", format!("{installed} -> {available}")),
+                Status::Reinstall => ("reinstall", clean(&row.why)),
+                Status::Off => ("add", format!("{available}, as a one-off on this host")),
+                Status::Remove => ("keep", format!("{installed}, added to this host")),
+                Status::Current | Status::Held | Status::Failed => {
+                    skipped.push(name.clone());
+                    continue;
+                }
+            };
+            if !self.session.workspace.config.tools.contains_key(&name) {
+                skipped.push(name.clone());
+                continue;
+            }
+            lines.push(format!("{verb:<10} {name:<20} {detail}"));
+            names.push(name);
+        }
+        if names.is_empty() {
+            self.info(match skipped.as_slice() {
+                [] => "nothing highlighted to update".to_string(),
+                [one] => format!("{one} has nothing to update"),
+                many => format!("none of the {} tools has anything to update", many.len()),
+            });
+            return;
+        }
+        if !skipped.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Left alone (current, held, or failed): {}",
+                skipped.join(", ")
+            ));
+        }
+        self.modal = Some(Modal::Confirm(Confirm {
+            title: format!("Update {} tool(s)?", names.len()),
+            lines,
+            scroll: 0,
+            request: Some(JobRequest::Install(names)),
+        }));
+    }
+
     fn tools_reinstall(&mut self) {
         if self.refuse_if_busy() {
             return;
         }
         let names: Vec<String> = self
-            .tools
-            .targets()
+            .tool_targets()
             .into_iter()
-            .filter(|name| self.row(name).is_some_and(|row| row.selected))
+            .filter(|name| self.tools.row(name).is_some_and(|row| row.selected))
             .collect();
         if names.is_empty() {
             self.fail("reinstall works on selected tools; mark some, or highlight one");
@@ -631,9 +1304,9 @@ impl App {
         let lines = names
             .iter()
             .map(
-                |name| match self.row(name).and_then(|row| row.installed.clone()) {
-                    Some(version) => format!("reinstall {name} (installed {version})"),
-                    None => format!("install {name} (not installed yet)"),
+                |name| match self.tools.row(name).and_then(|row| row.installed.clone()) {
+                    Some(version) => format!("reinstall  {name:<20} installed {version}"),
+                    None => format!("install    {name:<20} not installed yet"),
                 },
             )
             .collect();
@@ -645,32 +1318,16 @@ impl App {
         }));
     }
 
-    fn tools_install(&mut self) -> Effect {
-        let Some(row) = self.tools.current() else {
-            return Effect::None;
-        };
-        let (name, selected) = (row.name.clone(), row.selected);
-        if !self.session.workspace.config.tools.contains_key(&name) {
-            self.fail(format!("{name} isn't defined in the config"));
-            return Effect::None;
-        }
-        if selected {
-            self.info(format!("{name} is already selected; press a to install it"));
-            return Effect::None;
-        }
-        self.start(JobRequest::Install(vec![name]))
-    }
-
     fn tools_uninstall(&mut self) {
         if self.refuse_if_busy() {
             return;
         }
         let names: Vec<String> = self
-            .tools
-            .targets()
+            .tool_targets()
             .into_iter()
             .filter(|name| {
-                self.row(name)
+                self.tools
+                    .row(name)
                     .is_some_and(|row| row.selected || row.installed.is_some())
             })
             .collect();
@@ -681,9 +1338,9 @@ impl App {
         let mut lines: Vec<String> = names
             .iter()
             .map(
-                |name| match self.row(name).and_then(|row| row.installed.clone()) {
-                    Some(version) => format!("uninstall {name} (installed {version})"),
-                    None => format!("deselect {name} (not installed)"),
+                |name| match self.tools.row(name).and_then(|row| row.installed.clone()) {
+                    Some(version) => format!("uninstall  {name:<20} installed {version}"),
+                    None => format!("uninstall  {name:<20} deselect, not installed"),
                 },
             )
             .collect();
@@ -704,7 +1361,8 @@ impl App {
         if self.refuse_if_busy() {
             return;
         }
-        let Some(row) = self.tools.current() else {
+        let Some(row) = self.current_tool() else {
+            self.info("highlight a tool to roll back");
             return;
         };
         if !row.has_previous {
@@ -715,21 +1373,14 @@ impl App {
         let (name, installed) = (row.name.clone(), row.installed.clone().unwrap_or_default());
         self.modal = Some(Modal::Confirm(Confirm {
             title: format!("Roll back {name}?"),
-            lines: vec![format!(
-                "{name} goes from {installed} back to the version it had before its last install."
-            )],
+            lines: vec![
+                format!("rollback   {name:<20} {installed} -> the version before its last install"),
+                String::new(),
+                "Updates skip the version you roll back from until a newer one is out.".into(),
+            ],
             scroll: 0,
             request: Some(JobRequest::Rollback(name)),
         }));
-    }
-
-    fn row(&self, name: &str) -> Option<&crate::plan::ToolRow> {
-        self.tools
-            .plan
-            .as_ref()?
-            .rows
-            .iter()
-            .find(|row| row.name == name)
     }
 
     // ----- add-tool form --------------------------------------------------
@@ -746,7 +1397,7 @@ impl App {
             Field::text("name", "letters, digits, . _ -", ""),
             Field::choice(
                 "kind",
-                "left/right to change; auto picks github from a repo, cargo from a crate",
+                "left/right or click to change; auto picks github from a repo, cargo from a crate",
                 &KIND_CHOICES,
                 0,
             ),
@@ -767,8 +1418,17 @@ impl App {
                 "binaries to link, separated by spaces or commas",
                 "",
             ),
+            Field::text(
+                "category",
+                "optional group for the tools list, such as search or git",
+                "",
+            ),
             Field::text("description", "one line", ""),
-            Field::check("install now", "space toggles; installs after adding", false),
+            Field::check(
+                "install now",
+                "space or click toggles; installs after adding",
+                false,
+            ),
         ];
         self.modal = Some(Modal::Form(Form::new(
             FormKind::AddTool,
@@ -812,6 +1472,7 @@ impl App {
         let tool = ToolDef {
             kind,
             description: optional(F_DESCRIPTION),
+            category: optional(F_CATEGORY),
             repo: optional(F_REPO),
             pin: optional(F_PIN),
             crate_name: optional(F_CRATE),
@@ -858,7 +1519,7 @@ impl App {
                     format!("{error:#}\nthe new definition is in {}", file.display())
                 })?;
                 self.log_line(format!("added tools.{name} to {}", file.display()));
-                self.info(format!("added {name}"));
+                self.say(format!("✓ added {name}"), Tone::Success);
                 self.want(JobRequest::LoadPlan);
                 if form.checked(F_INSTALL_NOW) {
                     return Ok(self.start(JobRequest::Install(vec![name])));
@@ -877,7 +1538,7 @@ impl App {
                 }
                 let tools: Vec<String> = self.tools.marked.iter().cloned().collect();
                 if tools.is_empty() {
-                    return Err("mark tools on the Tools tab first (space)".into());
+                    return Err("mark tools in the Tools panel first (space)".into());
                 }
                 if let Some(unknown) = tools
                     .iter()
@@ -898,9 +1559,10 @@ impl App {
                     format!("{error:#}\nthe new preset is in {}", file.display())
                 })?;
                 self.log_line(format!("added presets.{name} to {}", file.display()));
-                self.info(format!(
-                    "created preset {name}; select it on the Presets tab"
-                ));
+                self.say(
+                    format!("✓ created preset {name}; turn it on in the Presets panel"),
+                    Tone::Success,
+                );
                 Ok(Effect::None)
             }
             FormKind::EditVar(name) => {
@@ -921,34 +1583,22 @@ impl App {
                     .reload()
                     .map_err(|error| format!("{error:#}"))?;
                 self.log_line(format!("set variable {name}"));
-                self.info(format!("set {name}; press d on the Dotfiles tab to deploy"));
+                self.say(format!("✓ set {name}; press d to deploy"), Tone::Success);
                 self.want(JobRequest::LoadDotfiles);
                 Ok(Effect::None)
             }
         }
     }
 
-    // ----- presets tab ----------------------------------------------------
-
-    pub fn preset_names(&self) -> Vec<String> {
-        self.session
-            .workspace
-            .config
-            .presets
-            .keys()
-            .cloned()
-            .collect()
-    }
+    // ----- presets panel ----------------------------------------------------
 
     fn presets_key(&mut self, key: KeyEvent) -> Effect {
-        let len = self.session.workspace.config.presets.len();
+        let len = self.preset_names().len();
         let list = &mut self.presets.list;
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => list.down(1, len),
-            KeyCode::Up | KeyCode::Char('k') => list.up(1),
-            KeyCode::PageDown => list.down(PAGE, len),
-            KeyCode::PageUp => list.up(PAGE),
-            KeyCode::Home | KeyCode::Char('g') => list.home(),
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => list.down(1, len),
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => list.up(1),
+            KeyCode::Home => list.home(),
             KeyCode::End | KeyCode::Char('G') => list.end(len),
             KeyCode::Char(' ') | KeyCode::Enter => self.toggle_preset(),
             KeyCode::Char('n') => self.open_create_preset(),
@@ -961,7 +1611,7 @@ impl App {
         if self.refuse_if_busy() {
             return;
         }
-        let Some(name) = self.preset_names().get(self.presets.list.cursor).cloned() else {
+        let Some(name) = self.current_preset() else {
             return;
         };
         let selected = self.session.workspace.host.presets.contains(&name);
@@ -974,16 +1624,19 @@ impl App {
         self.reload_session();
         self.want(JobRequest::LoadPlan);
         self.want(JobRequest::LoadDotfiles);
-        let verb = if selected { "deselected" } else { "selected" };
+        let verb = if selected { "turned off" } else { "turned on" };
         self.log_line(format!("{verb} preset {name}"));
-        self.info(format!(
-            "{verb} preset {name}; press a on the Tools tab to apply"
-        ));
+        self.say(
+            format!(
+                "✓ {verb} {name} in host.toml; the plan is being recomputed, then press a to apply"
+            ),
+            Tone::Success,
+        );
     }
 
     fn open_create_preset(&mut self) {
         if self.tools.marked.is_empty() {
-            self.fail("mark tools on the Tools tab first (space), then press n here");
+            self.fail("mark tools in the Tools panel first (space), then press n here");
             return;
         }
         let hint = format!(
@@ -1000,56 +1653,39 @@ impl App {
         )));
     }
 
-    // ----- dotfiles tab ---------------------------------------------------
-
-    pub fn palette_names(&self) -> Vec<String> {
-        self.session.workspace.palettes.keys().cloned().collect()
-    }
-
-    pub fn var_names(&self) -> Vec<String> {
-        self.session.workspace.config.vars.keys().cloned().collect()
-    }
+    // ----- dotfiles panel ---------------------------------------------------
 
     fn dotfiles_key(&mut self, key: KeyEvent) -> Effect {
-        let lens = (
-            self.dotfiles.visible_items().len(),
-            self.session.workspace.palettes.len(),
-            self.session.workspace.config.vars.len(),
-        );
-        let focus = self.dotfiles.focus;
-        let (list, len) = match focus {
-            DotPane::Targets => (&mut self.dotfiles.targets, lens.0),
-            DotPane::Palettes => (&mut self.dotfiles.palettes, lens.1),
-            DotPane::Vars => (&mut self.dotfiles.vars, lens.2),
-        };
+        let len = self.dot_rows().len();
+        let current = self.current_dot();
+        let list = &mut self.dotfiles.list;
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => list.down(1, len),
             KeyCode::Up | KeyCode::Char('k') => list.up(1),
             KeyCode::PageDown => list.down(PAGE, len),
             KeyCode::PageUp => list.up(PAGE),
-            KeyCode::Home | KeyCode::Char('g') => list.home(),
+            KeyCode::Home => list.home(),
             KeyCode::End | KeyCode::Char('G') => list.end(len),
-            KeyCode::Right => self.dotfiles.focus = focus.right(),
-            KeyCode::Left => self.dotfiles.focus = focus.left(),
-            KeyCode::Char('v') => {
-                self.dotfiles.changes_only = !self.dotfiles.changes_only;
-                self.dotfiles.targets.home();
-            }
+            KeyCode::Enter => match current {
+                Some(DotRow::Edited(_)) => self.dotfiles_capture(),
+                Some(DotRow::Palette) => return self.cycle_palette(),
+                Some(DotRow::Var(name)) => self.open_edit_var(name),
+                _ => {}
+            },
             KeyCode::Char('R') => {
                 self.want(JobRequest::LoadDotfiles);
-                self.info("refreshing the dotfiles preview");
+                self.info("checking dotfiles again");
             }
             KeyCode::Char('d') => return self.start(JobRequest::Deploy),
             KeyCode::Char('c') => self.dotfiles_capture(),
             KeyCode::Char('p') => return self.cycle_palette(),
-            KeyCode::Char('e') => self.open_edit_var(),
-            KeyCode::Enter | KeyCode::Char(' ') if focus == DotPane::Palettes => {
-                let names = self.palette_names();
-                if let Some(name) = names.get(self.dotfiles.palettes.cursor) {
-                    return self.pick_palette(name.clone());
-                }
-            }
-            KeyCode::Enter if focus == DotPane::Vars => self.open_edit_var(),
+            KeyCode::Char('e') => match current {
+                Some(DotRow::Var(name)) => self.open_edit_var(name),
+                _ => match self.var_names().first().cloned() {
+                    Some(name) => self.open_edit_var(name),
+                    None => self.info("this config declares no template variables"),
+                },
+            },
             _ => {}
         }
         Effect::None
@@ -1109,12 +1745,7 @@ impl App {
         }));
     }
 
-    fn open_edit_var(&mut self) {
-        let names = self.var_names();
-        let Some(name) = names.get(self.dotfiles.vars.cursor).cloned() else {
-            self.info("this config declares no template variables");
-            return;
-        };
+    fn open_edit_var(&mut self, name: String) {
         let definition = self.session.workspace.config.vars.get(&name);
         let secret = definition.is_some_and(|definition| definition.is_secret());
         let describe = definition
@@ -1141,44 +1772,22 @@ impl App {
         )));
     }
 
-    // ----- sync tab -------------------------------------------------------
+    // ----- repos panel ------------------------------------------------------
 
-    fn sync_key(&mut self, key: KeyEvent) -> Effect {
-        let len = self.sync.entries().len();
-        let diff_len = self.sync.diff_len();
-        let last = diff_len.saturating_sub(1);
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    fn repos_key(&mut self, key: KeyEvent) -> Effect {
+        let len = self.repo_rows().len();
+        let list = &mut self.repos.list;
         match key.code {
-            KeyCode::Char('d') if control => {
-                self.sync.diff_scroll = (self.sync.diff_scroll + PAGE).min(last)
-            }
-            KeyCode::Char('u') if control => {
-                self.sync.diff_scroll = self.sync.diff_scroll.saturating_sub(PAGE)
-            }
-            _ if control => {}
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.sync.list.down(1, len);
-                self.sync.diff_scroll = 0;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.sync.list.up(1);
-                self.sync.diff_scroll = 0;
-            }
-            KeyCode::Char('J') | KeyCode::PageDown => {
-                self.sync.diff_scroll = (self.sync.diff_scroll + PAGE).min(last)
-            }
-            KeyCode::Char('K') | KeyCode::PageUp => {
-                self.sync.diff_scroll = self.sync.diff_scroll.saturating_sub(PAGE)
-            }
-            KeyCode::Home => self.sync.diff_scroll = 0,
-            KeyCode::End => self.sync.diff_scroll = last,
+            KeyCode::Down | KeyCode::Char('j') => list.down(1, len),
+            KeyCode::Up | KeyCode::Char('k') => list.up(1),
+            KeyCode::Home => list.home(),
+            KeyCode::End | KeyCode::Char('G') => list.end(len),
             KeyCode::Char('R') => {
-                self.sync.requested = true;
                 self.want(JobRequest::LoadSync);
-                self.info("checking the repos");
+                self.want(JobRequest::LoadSchedule);
+                self.info("checking the repos and the schedule");
             }
             KeyCode::Char('s') => return self.start(JobRequest::Sync),
-            KeyCode::Char('U') => self.confirm_update(),
             _ => {}
         }
         Effect::None
@@ -1192,7 +1801,7 @@ impl App {
             "Update syncs every repo (local changes are stashed and reapplied),".to_string(),
             "redeploys dotfiles, then installs whatever tool changes that brought.".to_string(),
         ];
-        if let Some((incoming, _)) = &self.sync.data {
+        if let Some((incoming, _)) = &self.repos.data {
             lines.push(String::new());
             for repo in incoming {
                 lines.push(format!(
@@ -1203,32 +1812,21 @@ impl App {
             }
         }
         self.modal = Some(Modal::Confirm(Confirm {
-            title: "Update now?".into(),
+            title: "Update everything now?".into(),
             lines,
             scroll: 0,
             request: Some(JobRequest::Update),
         }));
     }
+}
 
-    // ----- settings tab ---------------------------------------------------
-
-    fn settings_key(&mut self, key: KeyEvent) -> Effect {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.settings.scroll += 1,
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.settings.scroll = self.settings.scroll.saturating_sub(1)
-            }
-            KeyCode::PageDown => self.settings.scroll += PAGE,
-            KeyCode::PageUp => self.settings.scroll = self.settings.scroll.saturating_sub(PAGE),
-            KeyCode::Home | KeyCode::Char('g') => self.settings.scroll = 0,
-            KeyCode::Char('R') => {
-                self.settings.requested = true;
-                self.want(JobRequest::LoadSchedule);
-                self.info("reading the schedule");
-            }
-            _ => {}
-        }
-        Effect::None
+fn past_tense(action: Action) -> &'static str {
+    match action {
+        Action::Install => "installed",
+        Action::Upgrade => "upgraded",
+        Action::Reinstall => "reinstalled",
+        Action::Uninstall => "removed",
+        Action::Keep | Action::Available | Action::Error => "kept",
     }
 }
 
@@ -1314,15 +1912,15 @@ pub fn deploy_summary(items: &[Item]) -> (Vec<String>, usize) {
     (lines, errors)
 }
 
-/// The verb shown next to a dotfile target in the dry-run list.
+/// What a deploy would do to a dotfile target, in a few words.
 pub fn change_verb(change: deploy::Change) -> &'static str {
     match change {
-        Change::Unchanged => "ok",
-        Change::Linked => "link",
-        Change::Rerendered => "re-render",
-        Change::BackedUp => "back up",
-        Change::Pruned => "remove",
-        Change::Skipped => "skip",
+        Change::Unchanged => "linked",
+        Change::Linked => "will link",
+        Change::Rerendered => "will re-render",
+        Change::BackedUp => "real file in the way",
+        Change::Pruned => "will remove",
+        Change::Skipped => "skipped",
         Change::Error => "error",
     }
 }

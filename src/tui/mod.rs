@@ -1,4 +1,4 @@
-//! Terminal UI: a tabbed full-screen view over the same [`Session`] API the
+//! Terminal UI: a panel-based full-screen view over the same [`Session`] API the
 //! CLI uses.
 //!
 //! The pieces are split so none of the logic needs a terminal to be tested:
@@ -9,6 +9,7 @@
 mod app;
 mod input;
 mod job;
+mod mouse;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -20,7 +21,10 @@ pub use job::{JobEvent, JobRequest};
 use crate::ops::Session;
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
+use ratatui::crossterm::execute;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -36,10 +40,14 @@ pub fn run(session: Session) -> Result<()> {
     let restoring = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().name() != Some(job::JOB_THREAD) {
+            let _ = execute!(std::io::stdout(), DisableMouseCapture);
             restoring(info);
         }
     }));
-    let result = event_loop(&mut terminal, &mut app, &sender, &receiver);
+    let result = execute!(std::io::stdout(), EnableMouseCapture)
+        .context("turning on mouse reporting")
+        .and_then(|()| event_loop(&mut terminal, &mut app, &sender, &receiver));
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     drop(std::panic::take_hook());
     result
@@ -59,11 +67,13 @@ fn event_loop(
             start(request, app);
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind != KeyEventKind::Release
-        {
-            match app.handle_key(key) {
+        if event::poll(Duration::from_millis(100))? {
+            let effect = match event::read()? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => app.handle_key(key),
+                Event::Mouse(mouse) => app.handle_mouse(mouse),
+                _ => Effect::None,
+            };
+            match effect {
                 Effect::Quit => return Ok(()),
                 Effect::Start(request) => start(request, app),
                 Effect::None => {}

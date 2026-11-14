@@ -62,6 +62,7 @@ impl Action {
 pub struct ToolRow {
     pub name: String,
     pub description: Option<String>,
+    pub category: Option<String>,
     pub selected: bool,
     /// Why it's selected (preset names, `host`, `required by x`).
     pub reasons: Vec<String>,
@@ -77,6 +78,9 @@ pub struct ToolRow {
     pub error: Option<String>,
     pub verified: bool,
     pub has_previous: bool,
+    /// Kept back on purpose: the available version is one the user rolled
+    /// back from.
+    pub held: bool,
     #[serde(skip)]
     pub resolved: Option<Resolved>,
 }
@@ -187,6 +191,7 @@ pub fn build(
             let mut row = ToolRow {
                 name: name.clone(),
                 description: tool.and_then(|tool| tool.description.clone()),
+                category: tool.and_then(|tool| tool.category.clone()),
                 selected,
                 reasons: selection.reasons.get(name).cloned().unwrap_or_default(),
                 pin: tool
@@ -203,6 +208,7 @@ pub fn build(
                 error: None,
                 verified: record.is_some_and(|record| record.verified),
                 has_previous: record.is_some_and(|record| record.previous.is_some()),
+                held: false,
                 resolved: None,
             };
             match lookup {
@@ -216,6 +222,10 @@ pub fn build(
                 None => {}
             }
             let (action, why) = decide(name, tool, record, selected, &row, options, in_scope(name));
+            row.held = action == Action::Keep
+                && record.is_some_and(|record| {
+                    record.skip_version.is_some() && record.skip_version == row.available
+                });
             row.action = action;
             row.why = why;
             row
@@ -633,14 +643,13 @@ mod tests {
                 [("ripgrep".to_string(), resolved(version, Method::Prebuilt))].into();
             build(&workspace, &selection, &state, &lookups, options)
         };
-        assert_eq!(
-            action(&plan_with("14.1.1", &Options::default()), "ripgrep"),
-            Action::Keep
-        );
-        assert_eq!(
-            action(&plan_with("14.2.0", &Options::default()), "ripgrep"),
-            Action::Upgrade
-        );
+        let held_plan = plan_with("14.1.1", &Options::default());
+        assert_eq!(action(&held_plan, "ripgrep"), Action::Keep);
+        let row = |plan: &Plan| plan.rows.iter().find(|row| row.name == "ripgrep").cloned();
+        assert!(row(&held_plan).unwrap().held);
+        let newer = plan_with("14.2.0", &Options::default());
+        assert_eq!(action(&newer, "ripgrep"), Action::Upgrade);
+        assert!(!row(&newer).unwrap().held);
         let reinstall = Options {
             mode: Mode::Reinstall(Some(["ripgrep".to_string()].into())),
             only: None,

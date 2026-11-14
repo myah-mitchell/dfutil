@@ -141,6 +141,9 @@ pub struct ToolDef {
     pub kind: Option<ToolKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Free-form group name the terminal UI can sort tools by (`search`, `git`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// GitHub `owner/name`, for release downloads and version lookups.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
@@ -207,10 +210,11 @@ impl ToolDef {
     /// A short hash of the recipe, so a change to how a tool is installed
     /// triggers a reinstall even when the version didn't change.
     pub fn fingerprint(&self) -> String {
-        // The description and pin don't change how a version is installed;
-        // a pin change is caught by comparing resolved versions instead.
+        // The description, category, and pin don't change how a version is
+        // installed; a pin change is caught by comparing resolved versions instead.
         let recipe = ToolDef {
             description: None,
+            category: None,
             pin: None,
             ..self.clone()
         };
