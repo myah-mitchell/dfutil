@@ -328,7 +328,7 @@ impl HostConfig {
     }
 
     pub fn repo_path(&self, home: &Path) -> PathBuf {
-        crate::util::expand_tilde(&self.repo, home)
+        crate::util::home_path(&self.repo, home)
     }
 }
 
@@ -491,7 +491,7 @@ impl Workspace {
                 );
             }
             let path = match &def.path {
-                Some(path) => crate::util::expand_tilde(path, &paths.home),
+                Some(path) => crate::util::home_path(path, &paths.home),
                 None => paths.sources_dir.join(name),
             };
             let present = path.join(".git").exists() || path.join(REPO_CONFIG_FILE).exists();

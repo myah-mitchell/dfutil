@@ -171,6 +171,14 @@ pub fn expand_tilde(path: &str, home: &Path) -> PathBuf {
     }
 }
 
+/// Resolves a path stored in a config file: `~/` expands against `home`, and
+/// any other relative path is taken as relative to `home`. Never returns a
+/// relative path, so links made from the result don't depend on the working
+/// directory.
+pub fn home_path(path: &str, home: &Path) -> PathBuf {
+    home.join(expand_tilde(path, home))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

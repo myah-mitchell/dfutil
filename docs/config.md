@@ -49,7 +49,7 @@ url = "git@git.example.com:<you>/<work-dotfiles>.git"
 
 | Key | Meaning |
 | --- | --- |
-| `repo` | Path to the main content repo checkout. `~` is expanded |
+| `repo` | Path to the main content repo checkout. `~` is expanded, and a relative path is relative to your home directory |
 | `presets` | Presets selected on this host |
 | `tools`, `exclude_tools` | Tools added to or removed from the preset selection |
 | `packages`, `exclude_packages` | The same for dotfile packages |

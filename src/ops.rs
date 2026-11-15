@@ -386,9 +386,10 @@ pub fn init(
         || repo.starts_with("git@")
         || (repo.contains(':') && !repo.starts_with('/') && !repo.starts_with('~'));
     let checkout = if looks_remote {
-        let destination = clone_to
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| home.join("dotfiles"));
+        let destination = match clone_to {
+            Some(path) => std::path::absolute(path)?,
+            None => home.join("dotfiles"),
+        };
         if destination.exists() {
             bail!(
                 "{} already exists; pass --clone-to or point --repo at it",
@@ -404,7 +405,10 @@ pub fn init(
         )?;
         destination
     } else {
-        crate::util::expand_tilde(repo, home)
+        // A relative --repo is relative to where init runs. It's stored
+        // absolute (or `~/`-relative) because links point at it.
+        let path = crate::util::expand_tilde(repo, home);
+        std::fs::canonicalize(&path).with_context(|| format!("finding {}", path.display()))?
     };
     let config_file = checkout.join(crate::config::REPO_CONFIG_FILE);
     let config = crate::config::RepoConfig::load(&config_file)?;
@@ -548,5 +552,63 @@ tools = ["hello"]
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_relative_repo_path_is_resolved_against_home_and_links_stay_absolute() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = home.path().join("dotfiles");
+        std::fs::create_dir_all(repo.join("zsh/.config/zsh")).unwrap();
+        std::fs::write(repo.join("zsh/.config/zsh/aliases.zsh"), "alias x=y\n").unwrap();
+        std::fs::write(
+            repo.join("dfutil.toml"),
+            "[packages.zsh]\n\n[presets.base]\npackages = [\"zsh\"]\n",
+        )
+        .unwrap();
+        // Written by hand, or by an older init, the way it was on a real host.
+        let host = home.path().join(".config/dfutil/host.toml");
+        std::fs::create_dir_all(host.parent().unwrap()).unwrap();
+        std::fs::write(&host, "repo = \"./dotfiles\"\npresets = [\"base\"]\n").unwrap();
+
+        let session = Session::load(&host, Some(home.path()), true).unwrap();
+        session.deploy(&deploy::Options::default()).unwrap();
+        let link = home.path().join(".config/zsh/aliases.zsh");
+        let target = std::fs::read_link(&link).unwrap();
+        assert!(target.is_absolute(), "{}", target.display());
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "alias x=y\n");
+    }
+
+    #[test]
+    fn init_stores_a_relative_repo_argument_as_an_absolute_path() {
+        let home = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let repo = elsewhere.path().join("dotfiles");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("dfutil.toml"), REPO).unwrap();
+        let host = home.path().join(".config/dfutil/host.toml");
+        let quiet = |_: String| {};
+        // Relative to the working directory, as typed on the command line.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = pathdiff(&repo, &cwd);
+        init(&host, home.path(), &relative, None, vec![], None, &quiet).unwrap();
+        assert_eq!(
+            HostConfig::load(&host).unwrap().repo,
+            repo.canonicalize().unwrap().display().to_string()
+        );
+    }
+
+    /// `target` relative to `base`, both absolute.
+    fn pathdiff(target: &Path, base: &Path) -> String {
+        let common = base
+            .ancestors()
+            .find(|ancestor| target.starts_with(ancestor))
+            .unwrap();
+        let ups = base.strip_prefix(common).unwrap().components().count();
+        let mut relative = PathBuf::from(".");
+        for _ in 0..ups {
+            relative.push("..");
+        }
+        relative.push(target.strip_prefix(common).unwrap());
+        relative.display().to_string()
     }
 }
