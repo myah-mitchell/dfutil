@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Unpacks `file` (downloaded as `asset_name`) into the empty directory
@@ -20,10 +20,14 @@ pub fn unpack(file: &Path, asset_name: &str, destination: &Path) -> Result<()> {
         let temporary =
             tempfile::NamedTempFile::new_in(destination.parent().unwrap_or(destination))?;
         {
-            let mut input = BufReader::new(File::open(file)?);
+            // liblzma rather than a pure-Rust decoder: release tarballs use
+            // the BCJ branch filters (7-Zip's do), which those don't support.
+            let mut input =
+                liblzma::read::XzDecoder::new_multi_decoder(BufReader::new(File::open(file)?));
             let mut output = BufWriter::new(temporary.as_file());
-            lzma_rs::xz_decompress(&mut input, &mut output)
-                .map_err(|error| anyhow::anyhow!("decompressing {asset_name}: {error}"))?;
+            std::io::copy(&mut input, &mut output)
+                .with_context(|| format!("decompressing {asset_name}"))?;
+            output.flush()?;
         }
         untar(File::open(temporary.path())?, destination)
     } else if lower.ends_with(".tar") {
@@ -253,15 +257,29 @@ pub(crate) mod tests {
                 .unwrap();
             builder.finish().unwrap();
         }
-        let xz_path = dir.path().join("node.tar.xz");
-        lzma_rs::xz_compress(
-            &mut BufReader::new(File::open(&tar_path).unwrap()),
-            &mut File::create(&xz_path).unwrap(),
-        )
-        .unwrap();
-        let out = dir.path().join("out");
-        unpack(&xz_path, "node.tar.xz", &out).unwrap();
-        assert!(content_root(&out).unwrap().join("bin/node").exists());
+        // Plain LZMA2, and with the x86 BCJ filter in front the way 7-Zip's
+        // release tarballs are packed.
+        for bcj in [false, true] {
+            let mut filters = liblzma::stream::Filters::new();
+            if bcj {
+                filters.x86();
+            }
+            filters.lzma2(&liblzma::stream::LzmaOptions::new_preset(6).unwrap());
+            let stream = liblzma::stream::Stream::new_stream_encoder(
+                &filters,
+                liblzma::stream::Check::Crc64,
+            )
+            .unwrap();
+            let xz_path = dir.path().join(format!("node-{bcj}.tar.xz"));
+            let mut encoder =
+                liblzma::write::XzEncoder::new_stream(File::create(&xz_path).unwrap(), stream);
+            std::io::copy(&mut File::open(&tar_path).unwrap(), &mut encoder).unwrap();
+            encoder.finish().unwrap();
+            let out = dir.path().join(format!("out-{bcj}"));
+            unpack(&xz_path, "node.tar.xz", &out).unwrap();
+            let node = content_root(&out).unwrap().join("bin/node");
+            assert_eq!(std::fs::read(node).unwrap(), b"hi", "bcj={bcj}");
+        }
     }
 
     #[test]
